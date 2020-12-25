@@ -79,7 +79,7 @@ class Mask1 {
   Raw bits;
 };
 
-// ------------------------------ Cast
+// ------------------------------ BitCast
 
 template <typename T, typename FromT>
 HWY_INLINE Vec1<T> BitCast(Sisd<T> /* tag */, Vec1<FromT> v) {
@@ -104,6 +104,11 @@ HWY_INLINE Vec1<T> Set(Sisd<T> /* tag */, const T2 t) {
 template <typename T>
 HWY_INLINE Vec1<T> Undefined(Sisd<T> /* tag */) {
   return Vec1<T>(0);
+}
+
+template <typename T, typename T2>
+Vec1<T> Iota(const Sisd<T> /* tag */, const T2 first) {
+  return Vec1<T>(static_cast<T>(first));
 }
 
 // ================================================== SHIFTS
@@ -207,6 +212,21 @@ HWY_INLINE Vec1<float> Xor(const Vec1<float> a, const Vec1<float> b) {
 }
 HWY_INLINE Vec1<double> Xor(const Vec1<double> a, const Vec1<double> b) {
   return BitwiseOp<int64_t>()(a, b, [](int64_t i, int64_t j) { return i ^ j; });
+}
+
+// ------------------------------ CopySign
+
+template <typename T>
+HWY_API Vec1<T> CopySign(const Vec1<T> magn, const Vec1<T> sign) {
+  static_assert(IsFloat<T>(), "Only makes sense for floating-point");
+  const auto msb = SignBit(Sisd<T>());
+  return Or(AndNot(msb, magn), And(msb, sign));
+}
+
+template <typename T>
+HWY_API Vec1<T> CopySignToAbs(const Vec1<T> abs, const Vec1<T> sign) {
+  static_assert(IsFloat<T>(), "Only makes sense for floating-point");
+  return Or(abs, And(SignBit(Sisd<T>()), sign));
 }
 
 // ------------------------------ Mask
@@ -365,18 +385,14 @@ HWY_INLINE Vec1<T> Max(const Vec1<T> a, const Vec1<T> b) {
 
 // ------------------------------ Floating-point negate
 
-HWY_INLINE Vec1<float> Neg(const Vec1<float> v) {
-  const Sisd<float> df;
-  const Sisd<uint32_t> du;
-  const auto sign = BitCast(df, Set(du, 0x80000000u));
-  return Xor(v, sign);
+template <typename T, HWY_IF_FLOAT(T)>
+HWY_INLINE Vec1<T> Neg(const Vec1<T> v) {
+  return Xor(v, SignBit(Sisd<T>()));
 }
 
-HWY_INLINE Vec1<double> Neg(const Vec1<double> v) {
-  const Sisd<double> df;
-  const Sisd<uint64_t> du;
-  const auto sign = BitCast(df, Set(du, 0x8000000000000000ull));
-  return Xor(v, sign);
+template <typename T, HWY_IF_NOT_FLOAT(T)>
+HWY_INLINE Vec1<T> Neg(const Vec1<T> v) {
+  return Zero(Sisd<T>()) - v;
 }
 
 // ------------------------------ mul/div
@@ -693,11 +709,27 @@ HWY_INLINE Vec1<ToT> PromoteTo(Sisd<ToT> /* tag */, Vec1<FromT> from) {
 template <typename FromT, typename ToT>
 HWY_INLINE Vec1<ToT> DemoteTo(Sisd<ToT> /* tag */, Vec1<FromT> from) {
   static_assert(sizeof(ToT) < sizeof(FromT), "Not demoting");
+  // Prevent ubsan errors when converting float to integers
+  if (IsFloat<FromT>() && !IsFloat<ToT>()) {
+    if (std::isinf(from.raw) || std::fabs(static_cast<double>(from.raw)) >
+                                    static_cast<double>(LimitsMax<ToT>())) {
+      return Vec1<ToT>(std::signbit(from.raw) ? LimitsMin<ToT>()
+                                              : LimitsMax<ToT>());
+    }
+  }
   return Vec1<ToT>(static_cast<ToT>(from.raw));
 }
 
 template <typename FromT, typename ToT>
 HWY_INLINE Vec1<ToT> ConvertTo(Sisd<ToT> /* tag */, Vec1<FromT> from) {
+  // Prevent ubsan errors when converting float to integers
+  if (IsFloat<FromT>() && !IsFloat<ToT>()) {
+    if (std::isinf(from.raw) || std::fabs(static_cast<double>(from.raw)) >
+                                    static_cast<double>(LimitsMax<ToT>())) {
+      return Vec1<ToT>(std::signbit(from.raw) ? LimitsMin<ToT>()
+                                              : LimitsMax<ToT>());
+    }
+  }
   return Vec1<ToT>(static_cast<ToT>(from.raw));
 }
 

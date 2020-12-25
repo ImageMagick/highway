@@ -58,6 +58,8 @@ static_assert(sizeof(GatherIndex64) == 8, "Must be 64-bit type");
 #define HWY_IF_LE32(T, N) hwy::EnableIf<N * sizeof(T) <= 4>* = nullptr
 
 #define HWY_IF_FLOAT(T) hwy::EnableIf<hwy::IsFloat<T>()>* = nullptr
+// IsSigned<float>() is true, so cannot use that to differentiate int/float.
+#define HWY_IF_NOT_FLOAT(T) hwy::EnableIf<!hwy::IsFloat<T>()>* = nullptr
 
 // Empty struct used as a size tag type.
 template <size_t N>
@@ -122,17 +124,54 @@ namespace HWY_NAMESPACE {
 // latter are useful if >128 bit vectors are unnecessary or undesirable.
 //
 // Users should not use the N of a Simd<> but instead query the actual number of
-// lanes via Lanes(). MaxLanes() is provided for template arguments and array
-// dimensions, but this is discouraged because an upper bound might not exist.
+// lanes via Lanes().
 template <typename Lane, size_t N>
 struct Simd {
   constexpr Simd() = default;
   using T = Lane;
   static_assert((N & (N - 1)) == 0 && N != 0, "N must be a power of two");
+
+  // Widening/narrowing ops change the number of lanes and/or their type.
+  // To initialize such vectors, we need the corresponding descriptor types:
+
+  // PromoteTo/DemoteTo with another lane type, but same number of lanes.
+  template <typename NewLane>
+  using Rebind = Simd<NewLane, N>;
+
+  // MulEven with another lane type, but same total size.
+  // Round up to correctly handle scalars with N=1.
+  template <typename NewLane>
+  using Repartition =
+      Simd<NewLane, (N * sizeof(Lane) + sizeof(NewLane) - 1) / sizeof(NewLane)>;
+
+  // LowerHalf with the same lane type, but half the lanes.
+  // Round up to correctly handle scalars with N=1.
+  using Half = Simd<T, (N + 1) / 2>;
+
+  // Combine with the same lane type, but twice the lanes.
+  using Twice = Simd<T, 2 * N>;
 };
 
-// Compile-time-constant upper bound (even for variable-length vectors), useful
-// for array dimensions.
+// Descriptor for the same number of lanes as D, but with the LaneType T.
+template <class T, class D>
+using Rebind = typename D::template Rebind<T>;
+
+// Descriptor for the same total size as D, but with the LaneType T.
+template <class T, class D>
+using Repartition = typename D::template Repartition<T>;
+
+// Descriptor for the same lane type as D, but half the lanes.
+template <class D>
+using Half = typename D::Half;
+
+// Descriptor for the same lane type as D, but twice the lanes.
+template <class D>
+using Twice = typename D::Twice;
+
+// Compile-time-constant, (typically but not guaranteed) an upper bound on the
+// number of lanes.
+// Prefer instead using Lanes() and dynamic allocation, or Rebind, or
+// `#if HWY_CAP_GE*`.
 template <typename T, size_t N>
 HWY_INLINE HWY_MAYBE_UNUSED constexpr size_t MaxLanes(Simd<T, N>) {
   return N;

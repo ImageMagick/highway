@@ -80,7 +80,9 @@ class Mask128 {
   Raw raw;
 };
 
-// ------------------------------ Cast
+// ------------------------------ BitCast
+
+namespace detail {
 
 HWY_API __v128_u BitCastToInteger(__v128_u v) { return v; }
 HWY_API __v128_u BitCastToInteger(__f32x4 v) {
@@ -91,7 +93,7 @@ HWY_API __v128_u BitCastToInteger(__f64x2 v) {
 }
 
 template <typename T, size_t N>
-HWY_API Vec128<uint8_t, N * sizeof(T)> cast_to_u8(Vec128<T, N> v) {
+HWY_API Vec128<uint8_t, N * sizeof(T)> BitCastToByte(Vec128<T, N> v) {
   return Vec128<uint8_t, N * sizeof(T)>{BitCastToInteger(v.raw)};
 }
 
@@ -106,15 +108,17 @@ struct BitCastFromInteger128<float> {
 };
 
 template <typename T, size_t N>
-HWY_API Vec128<T, N> cast_u8_to(Simd<T, N> /* tag */,
-                                Vec128<uint8_t, N * sizeof(T)> v) {
+HWY_API Vec128<T, N> BitCastFromByte(Simd<T, N> /* tag */,
+                                     Vec128<uint8_t, N * sizeof(T)> v) {
   return Vec128<T, N>{BitCastFromInteger128<T>()(v.raw)};
 }
+
+}  // namespace detail
 
 template <typename T, size_t N, typename FromT>
 HWY_API Vec128<T, N> BitCast(Simd<T, N> d,
                              Vec128<FromT, N * sizeof(T) / sizeof(FromT)> v) {
-  return cast_u8_to(d, cast_to_u8(v));
+  return detail::BitCastFromByte(d, detail::BitCastToByte(v));
 }
 
 // ------------------------------ Set
@@ -618,14 +622,28 @@ HWY_API Vec128<uint64_t, (N + 1) / 2> MulEven(const Vec128<uint32_t, N> a,
   return Vec128<uint64_t, (N + 1) / 2>{wasm_i64x2_mul(ae, be)};
 }
 
-// ------------------------------ Floating-point negate
+// ------------------------------ Negate
+
+template <typename T, size_t N, HWY_IF_FLOAT(T)>
+HWY_API Vec128<T, N> Neg(const Vec128<T, N> v) {
+  return Xor(v, SignBit(Simd<T, N>()));
+}
 
 template <size_t N>
-HWY_API Vec128<float, N> Neg(const Vec128<float, N> v) {
-  const Simd<float, N> df;
-  const Simd<uint32_t, N> du;
-  const auto sign = BitCast(df, Set(du, 0x80000000u));
-  return v ^ sign;
+HWY_API Vec128<int8_t, N> Neg(const Vec128<int8_t, N> v) {
+  return Vec128<int8_t, N>{wasm_i8x16_neg(v.raw)};
+}
+template <size_t N>
+HWY_API Vec128<int16_t, N> Neg(const Vec128<int16_t, N> v) {
+  return Vec128<int16_t, N>{wasm_i16x8_neg(v.raw)};
+}
+template <size_t N>
+HWY_API Vec128<int32_t, N> Neg(const Vec128<int32_t, N> v) {
+  return Vec128<int32_t, N>{wasm_i32x4_neg(v.raw)};
+}
+template <size_t N>
+HWY_API Vec128<int64_t, N> Neg(const Vec128<int64_t, N> v) {
+  return Vec128<int64_t, N>{wasm_i64x2_neg(v.raw)};
 }
 
 // ------------------------------ Floating-point mul / div
@@ -925,6 +943,23 @@ HWY_API Vec128<T, N> operator|(const Vec128<T, N> a, const Vec128<T, N> b) {
 template <typename T, size_t N>
 HWY_API Vec128<T, N> operator^(const Vec128<T, N> a, const Vec128<T, N> b) {
   return Xor(a, b);
+}
+
+// ------------------------------ CopySign
+
+template <typename T, size_t N>
+HWY_API Vec128<T, N> CopySign(const Vec128<T, N> magn,
+                              const Vec128<T, N> sign) {
+  static_assert(IsFloat<T>(), "Only makes sense for floating-point");
+  const auto msb = SignBit(Simd<T, N>());
+  return Or(AndNot(msb, magn), And(msb, sign));
+}
+
+template <typename T, size_t N>
+HWY_API Vec128<T, N> CopySignToAbs(const Vec128<T, N> abs,
+                                   const Vec128<T, N> sign) {
+  static_assert(IsFloat<T>(), "Only makes sense for floating-point");
+  return Or(abs, And(SignBit(Simd<T, N>()), sign));
 }
 
 // ------------------------------ Mask
@@ -1512,7 +1547,7 @@ HWY_API permute_wasm<T> SetTableIndices(Full128<T>, const int32_t* idx) {
 #endif
 
   const Full128<uint8_t> d8;
-  alignas(16) uint8_t control[16];  // = MaxLanes <= Lanes()
+  alignas(16) uint8_t control[16];  // = Lanes()
   for (size_t idx_byte = 0; idx_byte < 16; ++idx_byte) {
     const size_t idx_lane = idx_byte / sizeof(T);
     const size_t mod = idx_byte % sizeof(T);
@@ -1867,6 +1902,16 @@ HWY_API Vec128<int32_t, N> NearestInt(const Vec128<float, N> v) {
 }
 
 // ================================================== MISC
+
+// Returns a vector with lane i=[0, N) set to "first" + i.
+template <typename T, size_t N, typename T2>
+Vec128<T, N> Iota(const Simd<T, N> d, const T2 first) {
+  HWY_ALIGN T lanes[16 / sizeof(T)];
+  for (size_t i = 0; i < 16 / sizeof(T); ++i) {
+    lanes[i] = static_cast<T>(first + static_cast<T2>(i));
+  }
+  return Load(d, lanes);
+}
 
 // ------------------------------ Mask
 

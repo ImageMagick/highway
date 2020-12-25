@@ -247,43 +247,51 @@ HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
 
+// The lane type of a vector type, e.g. float for Vec<Simd<float, 4>>.
+template <class V>
+using LaneType = decltype(GetLane(V()));
+
+// Corresponding vector type, e.g. Vec128<float> for Simd<float, 4>. Useful as
+// the return type of functions that do not take a vector argument, or as an
+// argument type if the function only has a template argument for D.
+template <class D>
+using Vec = decltype(Zero(D()));
+
+// Full vector types. These may be used instead of `auto` for improved clarity,
+// at the cost of reduced generality (cannot express half vectors etc.).
+using U8xN = Vec<HWY_FULL(uint8_t)>;
+using U16xN = Vec<HWY_FULL(uint16_t)>;
+using U32xN = Vec<HWY_FULL(uint32_t)>;
+using U64xN = Vec<HWY_FULL(uint64_t)>;
+using I8xN = Vec<HWY_FULL(int8_t)>;
+using I16xN = Vec<HWY_FULL(int16_t)>;
+using I32xN = Vec<HWY_FULL(int32_t)>;
+using I64xN = Vec<HWY_FULL(int64_t)>;
+using F32xN = Vec<HWY_FULL(float)>;
+using F64xN = Vec<HWY_FULL(double)>;
+
 // Returns the closest value to v within [lo, hi].
 template <class V>
 HWY_API V Clamp(const V v, const V lo, const V hi) {
   return Min(Max(lo, v), hi);
 }
 
-// Corresponding vector type, e.g. Vec128<float> for Simd<float, 4>,
+// CombineShiftRightBytes (and ..Lanes) are not available for the scalar target.
+#if HWY_TARGET != HWY_SCALAR
+
+template <size_t kLanes, class V>
+HWY_API V CombineShiftRightLanes(const V hi, const V lo) {
+  return CombineShiftRightBytes<kLanes * sizeof(LaneType<V>)>(hi, lo);
+}
+
+#endif
+
+// Returns lanes with the most significant bit set and all other bits zero.
 template <class D>
-using Vec = decltype(Zero(D()));
-
-using U8xN = Vec<HWY_FULL(uint8_t)>;
-using U16xN = Vec<HWY_FULL(uint16_t)>;
-using U32xN = Vec<HWY_FULL(uint32_t)>;
-using U64xN = Vec<HWY_FULL(uint64_t)>;
-
-using I8xN = Vec<HWY_FULL(int8_t)>;
-using I16xN = Vec<HWY_FULL(int16_t)>;
-using I32xN = Vec<HWY_FULL(int32_t)>;
-using I64xN = Vec<HWY_FULL(int64_t)>;
-
-using F32xN = Vec<HWY_FULL(float)>;
-using F64xN = Vec<HWY_FULL(double)>;
-
-// The inner lane type of a vector type, e.g. float for Simd<float, 4>.
-template <class V>
-using LaneType = decltype(GetLane(V()));
-
-// Returns a vector with lane i=[0, N) set to "first" + i. Unique per-lane
-// values are required to detect lane-crossing bugs.
-template <class D, typename T2>
-Vec<D> Iota(const D d, const T2 first) {
-  using T = typename D::T;
-  HWY_ALIGN T lanes[MaxLanes(d)];
-  for (size_t i = 0; i < Lanes(d); ++i) {
-    lanes[i] = static_cast<T>(first + static_cast<T2>(i));
-  }
-  return Load(d, lanes);
+HWY_API Vec<D> SignBit(D d) {
+  using Unsigned = MakeUnsigned<typename D::T>;
+  const Unsigned bit = Unsigned(1) << (sizeof(Unsigned) * 8 - 1);
+  return BitCast(d, Set(Rebind<Unsigned, D>(), bit));
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

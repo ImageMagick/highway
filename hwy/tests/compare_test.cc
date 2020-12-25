@@ -12,17 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#undef HWY_DISABLED_TARGETS  // Override build setting, we want to test all
-#define HWY_DISABLED_TARGETS 0
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>  // memset
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "tests/compare_test.cc"
 #include "hwy/foreach_target.h"
-// ^ must come before highway.h and any *-inl.h.
-
-#include <string.h>  // memset
-
 #include "hwy/highway.h"
 #include "hwy/tests/test_util-inl.h"
+
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
@@ -35,13 +34,15 @@ struct TestEquality {
     const auto v2b = Iota(d, 2);
     const auto v3 = Iota(d, 3);
 
-    HWY_ALIGN const T all_false[MaxLanes(d)] = {};
-    HWY_ALIGN T all_true[MaxLanes(d)];
-    memset(all_true, 0xFF, sizeof(all_true));
+    const size_t N = Lanes(d);
+    auto all_false = AllocateAligned<T>(N);
+    auto all_true = AllocateAligned<T>(N);
+    std::fill(all_false.get(), all_false.get() + N, 0);
+    memset(all_true.get(), 0xFF, N * sizeof(T));
 
-    HWY_ASSERT_VEC_EQ(d, all_false, VecFromMask(v2 == v3));
-    HWY_ASSERT_VEC_EQ(d, all_true, VecFromMask(v2 == v2));
-    HWY_ASSERT_VEC_EQ(d, all_true, VecFromMask(v2 == v2b));
+    HWY_ASSERT_VEC_EQ(d, all_false.get(), VecFromMask(v2 == v3));
+    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(v2 == v2));
+    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(v2 == v2b));
   }
 };
 
@@ -52,14 +53,16 @@ struct TestStrictT {
     const auto v2 = Iota(d, 2);
     const auto vn = Iota(d, -T(Lanes(d)));
 
-    HWY_ALIGN const T all_false[MaxLanes(d)] = {};
-    HWY_ALIGN T all_true[MaxLanes(d)];
-    memset(all_true, 0xFF, sizeof(all_true));
+    const size_t N = Lanes(d);
+    auto all_false = AllocateAligned<T>(N);
+    auto all_true = AllocateAligned<T>(N);
+    std::fill(all_false.get(), all_false.get() + N, 0);
+    memset(all_true.get(), 0xFF, N * sizeof(T));
 
-    HWY_ASSERT_VEC_EQ(d, all_true, VecFromMask(v2 > vn));
-    HWY_ASSERT_VEC_EQ(d, all_true, VecFromMask(vn < v2));
-    HWY_ASSERT_VEC_EQ(d, all_false, VecFromMask(v2 < vn));
-    HWY_ASSERT_VEC_EQ(d, all_false, VecFromMask(vn > v2));
+    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(v2 > vn));
+    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(vn < v2));
+    HWY_ASSERT_VEC_EQ(d, all_false.get(), VecFromMask(v2 < vn));
+    HWY_ASSERT_VEC_EQ(d, all_false.get(), VecFromMask(vn > v2));
   }
 };
 
@@ -84,18 +87,20 @@ struct TestWeak {
     const auto v2 = Iota(d, 2);
     const auto vn = Iota(d, -T(Lanes(d)));
 
-    HWY_ALIGN const T all_false[MaxLanes(d)] = {};
-    HWY_ALIGN T all_true[MaxLanes(d)];
-    memset(all_true, 0xFF, sizeof(all_true));
+    const size_t N = Lanes(d);
+    auto all_false = AllocateAligned<T>(N);
+    auto all_true = AllocateAligned<T>(N);
+    std::fill(all_false.get(), all_false.get() + N, 0);
+    memset(all_true.get(), 0xFF, N * sizeof(T));
 
-    HWY_ASSERT_VEC_EQ(d, all_true, VecFromMask(v2 >= v2));
-    HWY_ASSERT_VEC_EQ(d, all_true, VecFromMask(vn <= vn));
+    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(v2 >= v2));
+    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(vn <= vn));
 
-    HWY_ASSERT_VEC_EQ(d, all_true, VecFromMask(v2 >= vn));
-    HWY_ASSERT_VEC_EQ(d, all_true, VecFromMask(vn <= v2));
+    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(v2 >= vn));
+    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(vn <= v2));
 
-    HWY_ASSERT_VEC_EQ(d, all_false, VecFromMask(v2 <= vn));
-    HWY_ASSERT_VEC_EQ(d, all_false, VecFromMask(vn >= v2));
+    HWY_ASSERT_VEC_EQ(d, all_false.get(), VecFromMask(v2 <= vn));
+    HWY_ASSERT_VEC_EQ(d, all_false.get(), VecFromMask(vn >= v2));
   }
 };
 

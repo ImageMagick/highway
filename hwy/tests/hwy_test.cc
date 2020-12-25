@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#undef HWY_DISABLED_TARGETS  // Override build setting, we want to test all
-#define HWY_DISABLED_TARGETS 0
+#include <stddef.h>
+#include <stdint.h>
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "tests/hwy_test.cc"
 #include "hwy/foreach_target.h"
-// ^ must come before highway.h and any *-inl.h.
 
 #include "hwy/highway.h"
 #include "hwy/tests/test_util-inl.h"
+
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
@@ -32,8 +33,8 @@ template <class DF>
 HWY_NOINLINE void FloorLog2(const DF df, const uint8_t* HWY_RESTRICT values,
                             uint8_t* HWY_RESTRICT log2) {
   // Descriptors for all required data types:
-  const Simd<int32_t, MaxLanes(df)> d32;
-  const Simd<uint8_t, MaxLanes(df)> d8;
+  const Rebind<int32_t, DF> d32;
+  const Rebind<uint8_t, DF> d8;
 
   const auto u8 = Load(d8, values);
   const auto bits = BitCast(d32, ConvertTo(df, PromoteTo(d32, u8)));
@@ -44,22 +45,19 @@ HWY_NOINLINE void FloorLog2(const DF df, const uint8_t* HWY_RESTRICT values,
 struct TestFloorLog2 {
   template <class T, class DF>
   HWY_NOINLINE void operator()(T /*unused*/, DF df) {
-    const size_t kBytes = 32;
-    static_assert(kBytes % MaxLanes(df) == 0, "Must be divisible");
+    const size_t N = Lanes(df);
+    auto in = AllocateAligned<uint8_t>(N);
+    auto expected = AllocateAligned<uint8_t>(N);
 
-    HWY_ALIGN uint8_t in[kBytes];
-    uint8_t expected[kBytes];
     RandomState rng{1234};
-    for (size_t i = 0; i < kBytes; ++i) {
+    for (size_t i = 0; i < N; ++i) {
       expected[i] = Random32(&rng) & 7;
       in[i] = static_cast<uint8_t>(1u << expected[i]);
     }
-    HWY_ALIGN uint8_t out[32];
-    for (size_t i = 0; i < kBytes; i += Lanes(df)) {
-      FloorLog2(df, in + i, out + i);
-    }
+    auto out = AllocateAligned<uint8_t>(N);
+    FloorLog2(df, in.get(), out.get());
     int sum = 0;
-    for (size_t i = 0; i < kBytes; ++i) {
+    for (size_t i = 0; i < N; ++i) {
       EXPECT_EQ(expected[i], out[i]);
       sum += out[i];
     }
@@ -226,40 +224,73 @@ struct TestName {
   }
 };
 
-HWY_NOINLINE void TestAllNameBasic() {
-  ForAllTypes(ForPartialVectors<TestName>());
-}
+HWY_NOINLINE void TestAllName() { ForAllTypes(ForPartialVectors<TestName>()); }
 
 struct TestSet {
   template <class T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
     // Zero
     const auto v0 = Zero(d);
-    HWY_ALIGN T expected[MaxLanes(d)] = {};  // zero-initialized.
-    HWY_ASSERT_VEC_EQ(d, expected, v0);
     const size_t N = Lanes(d);
+    auto expected = AllocateAligned<T>(N);
+    std::fill(expected.get(), expected.get() + N, 0);
+    HWY_ASSERT_VEC_EQ(d, expected.get(), v0);
 
     // Set
     const auto v2 = Set(d, T(2));
     for (size_t i = 0; i < N; ++i) {
       expected[i] = 2;
     }
-    HWY_ASSERT_VEC_EQ(d, expected, v2);
+    HWY_ASSERT_VEC_EQ(d, expected.get(), v2);
 
-    // iota
+    // Iota
     const auto vi = Iota(d, T(5));
     for (size_t i = 0; i < N; ++i) {
       expected[i] = 5 + i;
     }
-    HWY_ASSERT_VEC_EQ(d, expected, vi);
+    HWY_ASSERT_VEC_EQ(d, expected.get(), vi);
 
-    // undefined
+    // Undefined
     const auto vu = Undefined(d);
-    Store(vu, d, expected);
+    Store(vu, d, expected.get());
   }
 };
 
 HWY_NOINLINE void TestAllSet() { ForAllTypes(ForPartialVectors<TestSet>()); }
+
+struct TestSignBitInteger {
+  template <class T, class D>
+  HWY_NOINLINE void operator()(T /*unused*/, D d) {
+    const auto v0 = Zero(d);
+    const auto all = VecFromMask(v0 == v0);
+    const auto vs = SignBit(d);
+    const auto other = vs - Set(d, 1);
+
+    // Shifting left by one => overflow, equal zero
+    HWY_ASSERT_VEC_EQ(d, v0, vs + vs);
+    // Verify the lower bits are zero (only +/- and logical ops are available
+    // for all types)
+    HWY_ASSERT_VEC_EQ(d, all, vs + other);
+  }
+};
+
+struct TestSignBitFloat {
+  template <class T, class D>
+  HWY_NOINLINE void operator()(T /*unused*/, D d) {
+    const auto v0 = Zero(d);
+    const auto vs = SignBit(d);
+    const auto vp = Set(d, 2.25);
+    const auto vn = Set(d, -2.25);
+    HWY_ASSERT_VEC_EQ(d, Or(vp, vs), vn);
+    HWY_ASSERT_VEC_EQ(d, AndNot(vs, vn), vp);
+    HWY_ASSERT_VEC_EQ(d, v0, vs);
+  }
+};
+
+HWY_NOINLINE void TestAllSignBit() {
+  ForIntegerTypes(ForPartialVectors<TestSignBitInteger>());
+  ForFloatTypes(ForPartialVectors<TestSignBitFloat>());
+}
 
 struct TestCopyAndAssign {
   template <class T, class D>
@@ -311,7 +342,8 @@ HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestToString);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestType);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestOverflow);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllSet);
-HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllNameBasic);
+HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllSignBit);
+HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllName);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllCopyAndAssign);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllGetLane);
 

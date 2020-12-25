@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <cstdint>
-#undef HWY_DISABLED_TARGETS  // Override build setting, we want to test all
-#define HWY_DISABLED_TARGETS 0
+#include <stddef.h>
+#include <stdint.h>
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "tests/convert_test.cc"
 #include "hwy/foreach_target.h"
-// ^ must come before highway.h and any *-inl.h.
 
 #include "hwy/highway.h"
 #include "hwy/tests/test_util-inl.h"
+
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
@@ -32,16 +32,17 @@ template <typename ToT>
 struct TestBitCast {
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
-    const Simd<ToT, MaxLanes(d) * sizeof(T) / sizeof(ToT)> dto;
+    const Repartition<ToT, D> dto;
     const auto vf = Iota(d, 1);
     const auto vt = BitCast(dto, vf);
     static_assert(sizeof(vf) == sizeof(vt), "Cast must return same size");
     // Must return the same bits
-    HWY_ALIGN T from_lanes[MaxLanes(d)];
-    HWY_ALIGN ToT to_lanes[MaxLanes(dto)];
-    Store(vf, d, from_lanes);
-    Store(vt, dto, to_lanes);
-    HWY_ASSERT(BytesEqual(from_lanes, to_lanes, Lanes(d) * sizeof(T)));
+    auto from_lanes = AllocateAligned<T>(Lanes(d));
+    auto to_lanes = AllocateAligned<ToT>(Lanes(dto));
+    Store(vf, d, from_lanes.get());
+    Store(vt, dto, to_lanes.get());
+    HWY_ASSERT(
+        BytesEqual(from_lanes.get(), to_lanes.get(), Lanes(d) * sizeof(T)));
   }
 };
 
@@ -138,7 +139,7 @@ struct TestPromoteTo {
   HWY_NOINLINE void operator()(T /*unused*/, D from_d) {
     // Avoid "Do not know how to split the result of this operator"
 #if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-    const Simd<ToT, MaxLanes(from_d)> to_d;
+    const Rebind<ToT, D> to_d;
 
     const auto from_p1 = Iota(from_d, 1);
     const auto from_n1 = Set(from_d, T(-1));
@@ -201,7 +202,7 @@ struct TestDemoteTo {
   HWY_NOINLINE void operator()(T /*unused*/, D from_d) {
     // Avoid "Do not know how to split the result of this operator"
 #if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-    const Simd<ToT, MaxLanes(from_d)> to_d;
+    const Rebind<ToT, D> to_d;
 
     const auto from = Iota(from_d, 1);
     const auto from_n1 = Set(from_d, T(ToT(-1)));
@@ -250,14 +251,15 @@ struct TestConvertU8 {
   HWY_NOINLINE void operator()(T /*unused*/, const D du32) {
     // Avoid "Do not know how to split the result of this operator"
 #if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-    const Simd<uint8_t, MaxLanes(du32) * sizeof(uint32_t)> du8;
-    HWY_ALIGN uint8_t lanes8[MaxLanes(du8)];
-    Store(Iota(du8, 0), du8, lanes8);
-    HWY_ASSERT_VEC_EQ(du32, Iota(du32, 0), U32FromU8(LoadDup128(du8, lanes8)));
-    Store(Iota(du8, 0x7F), du8, lanes8);
+    const Repartition<uint8_t, D> du8;
+    auto lanes8 = AllocateAligned<uint8_t>(Lanes(du8));
+    Store(Iota(du8, 0), du8, lanes8.get());
+    HWY_ASSERT_VEC_EQ(du32, Iota(du32, 0),
+                      U32FromU8(LoadDup128(du8, lanes8.get())));
+    Store(Iota(du8, 0x7F), du8, lanes8.get());
     HWY_ASSERT_VEC_EQ(du32, Iota(du32, 0x7F),
-                      U32FromU8(LoadDup128(du8, lanes8)));
-    const HWY_CAPPED(uint8_t, MaxLanes(du32)) p8;
+                      U32FromU8(LoadDup128(du8, lanes8.get())));
+    const Rebind<uint8_t, D> p8;
     HWY_ASSERT_VEC_EQ(p8, Iota(p8, 0), U8FromU32(Iota(du32, 0)));
     HWY_ASSERT_VEC_EQ(p8, Iota(p8, 0x7F), U8FromU32(Iota(du32, 0x7F)));
 
@@ -277,7 +279,7 @@ struct TestIntFromFloat {
     // Avoid "Do not know how to split the result of this operator"
 #if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
     using TI = MakeSigned<T>;
-    const Simd<TI, MaxLanes(df)> di;
+    const Rebind<TI, DF> di;
     // Integer positive
     HWY_ASSERT_VEC_EQ(di, Iota(di, TI(4)), ConvertTo(di, Iota(df, T(4.0))));
 
@@ -309,7 +311,7 @@ struct TestFloatFromInt {
     // Avoid "Do not know how to split the result of this operator"
 #if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
     using TF = MakeFloat<T>;
-    const Simd<TF, MaxLanes(di)> df;
+    const Rebind<TF, DI> df;
 
     // Integer positive
     HWY_ASSERT_VEC_EQ(df, Iota(df, TF(4.0)), ConvertTo(df, Iota(di, T(4))));
@@ -341,7 +343,7 @@ struct TestI32F64 {
 #if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
     using TI = int32_t;
     using TF = double;
-    const Simd<TI, MaxLanes(df)> di;
+    const Rebind<TI, DF> di;
     // Integer positive
     HWY_ASSERT_VEC_EQ(di, Iota(di, TI(4)), DemoteTo(di, Iota(df, T(4.0))));
     HWY_ASSERT_VEC_EQ(df, Iota(df, TF(4.0)), PromoteTo(df, Iota(di, T(4))));
@@ -391,7 +393,7 @@ struct TestNearestInt {
   HWY_NOINLINE void operator()(T /*unused*/, const D di) {
     // Avoid "Do not know how to split the result of this operator"
 #if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-    const Simd<float, MaxLanes(di)> df;
+    const Rebind<float, D> df;
 
     // Integer positive
     HWY_ASSERT_VEC_EQ(di, Iota(di, 4), NearestInt(Iota(df, 4.0f)));

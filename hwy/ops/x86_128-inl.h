@@ -83,14 +83,16 @@ class Mask128 {
   Raw raw;
 };
 
-// ------------------------------ Cast
+// ------------------------------ BitCast
+
+namespace detail {
 
 HWY_API __m128i BitCastToInteger(__m128i v) { return v; }
 HWY_API __m128i BitCastToInteger(__m128 v) { return _mm_castps_si128(v); }
 HWY_API __m128i BitCastToInteger(__m128d v) { return _mm_castpd_si128(v); }
 
 template <typename T, size_t N>
-HWY_API Vec128<uint8_t, N * sizeof(T)> cast_to_u8(Vec128<T, N> v) {
+HWY_API Vec128<uint8_t, N * sizeof(T)> BitCastToByte(Vec128<T, N> v) {
   return Vec128<uint8_t, N * sizeof(T)>{BitCastToInteger(v.raw)};
 }
 
@@ -109,15 +111,17 @@ struct BitCastFromInteger128<double> {
 };
 
 template <typename T, size_t N>
-HWY_API Vec128<T, N> cast_u8_to(Simd<T, N> /* tag */,
+HWY_API Vec128<T, N> BitCastFromByte(Simd<T, N> /* tag */,
                                 Vec128<uint8_t, N * sizeof(T)> v) {
   return Vec128<T, N>{BitCastFromInteger128<T>()(v.raw)};
 }
 
+}  // namespace detail
+
 template <typename T, size_t N, typename FromT>
 HWY_API Vec128<T, N> BitCast(Simd<T, N> d,
                              Vec128<FromT, N * sizeof(T) / sizeof(FromT)> v) {
-  return cast_u8_to(d, cast_to_u8(v));
+  return detail::BitCastFromByte(d, detail::BitCastToByte(v));
 }
 
 // ------------------------------ Set
@@ -774,22 +778,16 @@ HWY_API Vec128<uint64_t, (N + 1) / 2> MulEven(const Vec128<uint32_t, N> a,
   return Vec128<uint64_t, (N + 1) / 2>{_mm_mul_epu32(a.raw, b.raw)};
 }
 
-// ------------------------------ Floating-point negate
+// ------------------------------ Negate
 
-template <size_t N>
-HWY_API Vec128<float, N> Neg(const Vec128<float, N> v) {
-  const Simd<float, N> df;
-  const Simd<uint32_t, N> du;
-  const auto sign = BitCast(df, Set(du, 0x80000000u));
-  return v ^ sign;
+template <typename T, size_t N, HWY_IF_FLOAT(T)>
+HWY_API Vec128<T, N> Neg(const Vec128<T, N> v) {
+  return Xor(v, SignBit(Simd<T, N>()));
 }
 
-template <size_t N>
-HWY_API Vec128<double, N> Neg(const Vec128<double, N> v) {
-  const Simd<double, N> df;
-  const Simd<uint64_t, N> du;
-  const auto sign = BitCast(df, Set(du, 0x8000000000000000ull));
-  return v ^ sign;
+template <typename T, size_t N, HWY_IF_NOT_FLOAT(T)>
+HWY_API Vec128<T, N> Neg(const Vec128<T, N> v) {
+  return Zero(Simd<T, N>()) - v;
 }
 
 // ------------------------------ Floating-point mul / div
@@ -1266,6 +1264,46 @@ HWY_API Vec128<T, N> operator|(const Vec128<T, N> a, const Vec128<T, N> b) {
 template <typename T, size_t N>
 HWY_API Vec128<T, N> operator^(const Vec128<T, N> a, const Vec128<T, N> b) {
   return Xor(a, b);
+}
+
+// ------------------------------ CopySign
+
+template <typename T, size_t N>
+HWY_API Vec128<T, N> CopySign(const Vec128<T, N> magn,
+                              const Vec128<T, N> sign) {
+  static_assert(IsFloat<T>(), "Only makes sense for floating-point");
+
+  const Simd<T, N> d;
+  const auto msb = SignBit(d);
+
+#if HWY_TARGET == HWY_AVX3
+  const Rebind<MakeUnsigned<T>, decltype(d)> du;
+  // Truth table for msb, magn, sign | bitwise msb ? sign : mag
+  //                  0    0     0   |  0
+  //                  0    0     1   |  0
+  //                  0    1     0   |  1
+  //                  0    1     1   |  1
+  //                  1    0     0   |  0
+  //                  1    0     1   |  1
+  //                  1    1     0   |  0
+  //                  1    1     1   |  1
+  // The lane size does not matter because we are not using predication.
+  const __m128i out = _mm_ternarylogic_epi32(
+      BitCast(du, msb).raw, BitCast(du, magn).raw, BitCast(du, sign).raw, 0xAC);
+  return BitCast(d, decltype(Zero(du)){out});
+#else
+  return Or(AndNot(msb, magn), And(msb, sign));
+#endif
+}
+
+template <typename T, size_t N>
+HWY_API Vec128<T, N> CopySignToAbs(const Vec128<T, N> abs, const Vec128<T, N> sign) {
+#if HWY_TARGET == HWY_AVX3
+  // AVX3 can also handle abs < 0, so no extra action needed.
+  return CopySign(abs, sign);
+#else
+  return Or(abs, And(SignBit(Simd<T, N>()), sign));
+#endif
 }
 
 // ------------------------------ Mask
@@ -2381,6 +2419,16 @@ HWY_API Vec128<int32_t, N> NearestInt(const Vec128<float, N> v) {
 }
 
 // ================================================== MISC
+
+// Returns a vector with lane i=[0, N) set to "first" + i.
+template <typename T, size_t N, typename T2, HWY_IF_LE128(T, N)>
+Vec128<T, N> Iota(const Simd<T, N> d, const T2 first) {
+  HWY_ALIGN T lanes[16 / sizeof(T)];
+  for (size_t i = 0; i < 16 / sizeof(T); ++i) {
+    lanes[i] = static_cast<T>(first + static_cast<T2>(i));
+  }
+  return Load(d, lanes);
+}
 
 // ------------------------------ Mask
 

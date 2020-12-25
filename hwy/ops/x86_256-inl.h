@@ -87,15 +87,16 @@ class Mask256 {
   Raw raw;
 };
 
-// ------------------------------ Cast
+// ------------------------------ BitCast
+
+namespace detail {
 
 HWY_API __m256i BitCastToInteger(__m256i v) { return v; }
 HWY_API __m256i BitCastToInteger(__m256 v) { return _mm256_castps_si256(v); }
 HWY_API __m256i BitCastToInteger(__m256d v) { return _mm256_castpd_si256(v); }
 
-// cast_to_u8
 template <typename T>
-HWY_API Vec256<uint8_t> cast_to_u8(Vec256<T> v) {
+HWY_API Vec256<uint8_t> BitCastToByte(Vec256<T> v) {
   return Vec256<uint8_t>{BitCastToInteger(v.raw)};
 }
 
@@ -113,16 +114,16 @@ struct BitCastFromInteger256<double> {
   HWY_INLINE __m256d operator()(__m256i v) { return _mm256_castsi256_pd(v); }
 };
 
-// cast_u8_to
 template <typename T>
-HWY_API Vec256<T> cast_u8_to(Full256<T> /* tag */, Vec256<uint8_t> v) {
+HWY_API Vec256<T> BitCastFromByte(Full256<T> /* tag */, Vec256<uint8_t> v) {
   return Vec256<T>{BitCastFromInteger256<T>()(v.raw)};
 }
 
-// BitCast
+}  // namespace detail
+
 template <typename T, typename FromT>
 HWY_API Vec256<T> BitCast(Full256<T> d, Vec256<FromT> v) {
-  return cast_u8_to(d, cast_to_u8(v));
+  return detail::BitCastFromByte(d, detail::BitCastToByte(v));
 }
 
 // ------------------------------ Set
@@ -279,6 +280,45 @@ HWY_API Vec256<T> operator|(const Vec256<T> a, const Vec256<T> b) {
 template <typename T>
 HWY_API Vec256<T> operator^(const Vec256<T> a, const Vec256<T> b) {
   return Xor(a, b);
+}
+
+// ------------------------------ CopySign
+
+template <typename T>
+HWY_API Vec256<T> CopySign(const Vec256<T> magn, const Vec256<T> sign) {
+  static_assert(IsFloat<T>(), "Only makes sense for floating-point");
+
+  const Full256<T> d;
+  const auto msb = SignBit(d);
+
+#if HWY_TARGET == HWY_AVX3
+  const Rebind<MakeUnsigned<T>, decltype(d)> du;
+  // Truth table for msb, magn, sign | bitwise msb ? sign : mag
+  //                  0    0     0   |  0
+  //                  0    0     1   |  0
+  //                  0    1     0   |  1
+  //                  0    1     1   |  1
+  //                  1    0     0   |  0
+  //                  1    0     1   |  1
+  //                  1    1     0   |  0
+  //                  1    1     1   |  1
+  // The lane size does not matter because we are not using predication.
+  const __m256i out = _mm256_ternarylogic_epi32(
+      BitCast(du, msb).raw, BitCast(du, magn).raw, BitCast(du, sign).raw, 0xAC);
+  return BitCast(d, decltype(Zero(du)){out});
+#else
+  return Or(AndNot(msb, magn), And(msb, sign));
+#endif
+}
+
+template <typename T>
+HWY_API Vec256<T> CopySignToAbs(const Vec256<T> abs, const Vec256<T> sign) {
+#if HWY_TARGET == HWY_AVX3
+  // AVX3 can also handle abs < 0, so no extra action needed.
+  return CopySign(abs, sign);
+#else
+  return Or(abs, And(SignBit(Full256<T>()), sign));
+#endif
 }
 
 // ------------------------------ Mask
@@ -726,20 +766,16 @@ HWY_API Vec256<uint64_t> MulEven(const Vec256<uint32_t> a,
   return Vec256<uint64_t>{_mm256_mul_epu32(a.raw, b.raw)};
 }
 
-// ------------------------------ Floating-point negate
+// ------------------------------ Negate
 
-HWY_API Vec256<float> Neg(const Vec256<float> v) {
-  const Full256<float> df;
-  const Full256<uint32_t> du;
-  const auto sign = BitCast(df, Set(du, 0x80000000u));
-  return v ^ sign;
+template <typename T, HWY_IF_FLOAT(T)>
+HWY_API Vec256<T> Neg(const Vec256<T> v) {
+  return Xor(v, SignBit(Full256<T>()));
 }
 
-HWY_API Vec256<double> Neg(const Vec256<double> v) {
-  const Full256<double> df;
-  const Full256<uint64_t> du;
-  const auto sign = BitCast(df, Set(du, 0x8000000000000000ull));
-  return v ^ sign;
+template <typename T, HWY_IF_NOT_FLOAT(T)>
+HWY_API Vec256<T> Neg(const Vec256<T> v) {
+  return Zero(Full256<T>()) - v;
 }
 
 // ------------------------------ Floating-point mul / div
@@ -2011,6 +2047,16 @@ HWY_API Vec256<int32_t> NearestInt(const Vec256<float> v) {
 }
 
 // ================================================== MISC
+
+// Returns a vector with lane i=[0, N) set to "first" + i.
+template <typename T, typename T2>
+Vec256<T> Iota(const Full256<T> d, const T2 first) {
+  HWY_ALIGN T lanes[32 / sizeof(T)];
+  for (size_t i = 0; i < 32 / sizeof(T); ++i) {
+    lanes[i] = static_cast<T>(first + static_cast<T2>(i));
+  }
+  return Load(d, lanes);
+}
 
 // ------------------------------ Mask
 

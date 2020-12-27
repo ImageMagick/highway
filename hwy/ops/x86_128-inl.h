@@ -197,11 +197,11 @@ HWY_API Vec128<T, N> Undefined(Simd<T, N> /* tag */) {
 }
 template <size_t N, HWY_IF_LE128(float, N)>
 HWY_API Vec128<float, N> Undefined(Simd<float, N> /* tag */) {
-#ifdef __clang__
-  return Vec128<float, N>{_mm_undefined_ps()};
-#else
+#ifdef __GNUC__
   __m128 raw;
   return Vec128<float, N>{raw};
+#else
+  return Vec128<float, N>{_mm_undefined_ps()};
 #endif
 }
 template <size_t N, HWY_IF_LE128(double, N)>

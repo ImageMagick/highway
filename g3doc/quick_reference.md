@@ -4,16 +4,13 @@
 
 ## Usage modes
 
-A project or module using SIMD can choose to integrate into its callers via
-static or dynamic dispatch. Examples of both are provided in examples/.
+Highway can compile for multiple CPU targets, choosing the best available at
+runtime (dynamic dispatch), or compile for a single CPU target without runtime
+overhead (static dispatch). Examples of both are provided in examples/.
 
-Static dispatch means choosing the single CPU target at compile-time. This does
-not require any setup nor per-call overhead.
-
-Dynamic dispatch means generating implementations for multiple targets and
-choosing the best available at runtime. Uses the same source code as static,
-plus `#define HWY_TARGET_INCLUDE` and `#include
-"third_party/highway/hwy/foreach_target.h"`.
+Dynamic dispatch uses the same source code as static, plus `#define
+HWY_TARGET_INCLUDE`, `#include "hwy/foreach_target.h"` and
+`HWY_DYNAMIC_DISPATCH`.
 
 ## Headers
 
@@ -24,8 +21,7 @@ The public headers are:
     but allows declaring functions implemented out of line.
 
 *   hwy/base.h: included from headers that only need compiler/platform-dependent
-    definitions (e.g. `HWY_ALIGN_MAX` and/or `kMaxVectorSize`) without the full
-    highway.h.
+    definitions (e.g. `HWY_ALIGN_MAX` or `PopCount`) without the full highway.h.
 
 *   hwy/foreach_target.h: re-includes the translation unit (specified by
     `HWY_TARGET_INCLUDE`) once per enabled target to generate code from the same
@@ -38,6 +34,7 @@ The public headers are:
     prefetching) and memory barriers, independent of actual SIMD.
 
 SIMD implementations must be preceded and followed by the following:
+
 ```
 #include "hwy/highway.h"
 HWY_BEFORE_NAMESPACE();  // at file scope
@@ -64,33 +61,47 @@ HWY_AFTER_NAMESPACE();
 
 ## Vector and descriptor types
 
-SIMD vectors consist of one or more 'lanes' of the same built-in type `T =
-uint##_t, int##_t, float or double` for `## = 8, 16, 32, 64`. Highway provides
-vectors with `N <= kMaxVectorSize / sizeof(T)` lanes, where `N` is a power of
-two.
+Highway vectors consist of one or more 'lanes' of the same built-in type `T =
+uint##_t, int##_t` for `## = 8, 16, 32, 64`, plus `T = float##_t` for `## = 16,
+32, 64`. `float16_t` is an IEEE binary16 half-float and only supports load,
+store, and conversion to/from `float32_t`; infinity or NaN have
+implementation-defined results.
+
+Each vector has `N` lanes (a power of two, possibly unknown at compile time).
 
 Platforms such as x86 support multiple vector types, and other platforms require
-that vectors are built-in types. Thus the Highway API consists of overloaded
-functions selected via a zero-sized tag parameter `d` of type `D = Simd<T, N>`.
-These are typically constructed using aliases:
+that vectors are built-in types. On RVV, vectors are sizeless and thus cannot be
+wrapped inside a class. The Highway API satisfies these constraints because it
+is designed around overloaded functions selected via a zero-sized tag parameter
+`d` of type `D = Simd<T, N>`. These are typically constructed using aliases:
 
-*   `const HWY_FULL(T) d;` chooses the maximum N for the current target;
+*   `const HWY_FULL(T[, LMUL=1]) d;` chooses an `N` that results in a native
+    vector for the current target. For targets (e.g. RVV) that support register
+    groups, the optional `LMUL` (1, 2, 4, 8) specifies the number of registers
+    in the group. This effectively multiplies the lane count in each operation
+    by `LMUL`. For mixed-precision code, `LMUL` must be at least the ratio of
+    the sizes of the largest and smallest type. `LMUL > 1` is more efficient on
+    single-issue machines, but larger values reduce the effective number of
+    registers, which may cause the compiler to spill them to memory.
+
 *   `const HWY_CAPPED(T, N) d;` for up to `N` lanes.
 
-The type `T` may be accessed as D::T (prefixed with typename if D is a template
-argument).
+For mixed-precision code (e.g. `uint8_t` lanes promoted to `float`), descriptors
+for the smaller types must be obtained from those of the larger type (e.g. via
+`Rebind<uint8_t, HWY_FULL(float)>`).
 
-There are three possibilities for the template parameter `N`:
-1.  Equal to the hardware vector width. This is the most common case, e.g. when
-    using `HWY_FULL(T)` on a target with compile-time constant vectors.
+The type `T` may be accessed as `TFromD<D>`. There are three possibilities for
+the template parameter `N`:
+
+1.  Equal to the hardware vector width, e.g. when using `HWY_FULL(T)` on a
+    target with compile-time constant vectors.
 
 1.  Less than the hardware vector width. This is the result of a compile-time
     decision by the user, i.e. using `HWY_CAPPED(T, N)` to limit the number of
     lanes, even when the hardware vector width could be greater.
 
-1.  Greater or equal to the hardware vector width, e.g. when the hardware vector
-    width is not known at compile-time. User code should not rely on `N`
-    actually being an upper bound, because variable vectors can be large!
+1.  Unrelated to the hardware vector width, e.g. when the hardware vector width
+    is not known at compile-time and may be very large.
 
 In all cases, `Lanes(d)` returns the actual number of lanes, i.e. the amount by
 which to advance loop counters. `MaxLanes(d)` returns the `N` from `Simd<T, N>`,
@@ -99,22 +110,18 @@ are not able to interpret it as constexpr. Instead of `MaxLanes`, prefer to use
 alternatives, e.g. `Rebind` or `aligned_allocator.h` for dynamic allocation of
 `Lanes(d)` elements.
 
-Note that case 3 does not imply the API will use more than one native vector.
-Highway is designed to map a user-specified vector to a single
-(possibly partial) vector. By discouraging user-specified `N`, we improve
-performance portability (e.g. by reducing spills to memory for platforms that
-have smaller vectors than the developer expected).
+Highway is designed to map a vector variable to a (possibly partial) hardware
+register or register group. By discouraging user-specified `N` and tuples of
+vector variables, we improve performance portability (e.g. by reducing spills to
+memory for platforms that have smaller vectors than the developer expected).
 
 To construct vectors, call factory functions (see "Initialization" below) with
 a tag parameter `d`.
 
-Local variables typically use auto for type deduction. If `d` is
-`HWY_FULL(int32_t)`, users may instead use the full-width vector alias `I32xN`
-(or `U16xN`, `F64xN` etc.) to document the types used.
-
-For function arguments, it is often sufficient to return the same type as the
-argument: `template<class V> V Squared(V v) { return v * v; }`. Otherwise, use
-the alias `Vec<D>`.
+Local variables typically use auto for type deduction. For some generic
+functions, a template argument `V` is sufficient: `template<class V> V Squared(V
+v) { return v * v; }`. In general, functions have a `D` template argument and
+can return vectors of type `Vec<D>`.
 
 Note that Highway functions reside in `hwy::HWY_NAMESPACE`, whereas user-defined
 functions reside in `project::[nested]::HWY_NAMESPACE`. Because all Highway
@@ -128,9 +135,11 @@ such as a lane index or shift count) require a using-declaration such as
 ## Operations
 
 In the following, the argument or return type `V` denotes a vector with `N`
-lanes. Operations limited to certain vector types begin with a constraint of the
-form `V`: `{u,i,f}{8/16/32/64}` to denote unsigned/signed/floating-point types,
-possibly with the specified size in bits of `T`.
+lanes, and `M` a mask. Operations limited to certain vector types begin with a
+constraint of the form `V`: `{prefixes}[{bits}]`. The prefixes `u,i,f` denote
+unsigned, signed, and floating-point types, and bits indicates the number of
+bits per lane: 8, 16, 32, or 64. Any combination of the specified prefixes and
+bits are allowed. Abbreviations of the form `u32 = {u}{32}` may also be used.
 
 ### Initialization
 
@@ -150,35 +159,38 @@ possibly with the specified size in bits of `T`.
 *   <code>V **operator+**(V a, V b)</code>: returns `a[i] + b[i]` (mod 2^bits).
 *   <code>V **operator-**(V a, V b)</code>: returns `a[i] - b[i]` (mod 2^bits).
 
-*   `V`: `ui8/16` \
-    <code>V **SaturatedAdd**(V a, V b)</code> returns `a[i] + b[i]` saturated to
-    the minimum/maximum representable value.
+*   `V`: `{i,f}` \
+    <code>V **Neg**(V a)</code>: returns `-a[i]`.
 
-*   `V`: `ui8/16` \
-    <code>V **SaturatedSub**(V a, V b)</code> returns `a[i] - b[i]` saturated to
-    the minimum/maximum representable value.
-
-*   `V`: `u8/16` \
-    <code>V **AverageRound**(V a, V b)</code> returns `(a[i] + b[i] + 1) / 2`.
-
-*   `V`: `i8/16/32`, `f` \
+*   `V`: `{i}{8,16,32}, {f}` \
     <code>V **Abs**(V a)</code> returns the absolute value of `a[i]`; for
     integers, `LimitsMin()` maps to `LimitsMax() + 1`.
 
-*   `V`: `ui8/16/32`, `f` \
-    <code>V **Min**(V a, V b)</code>: returns `min(a[i], b[i])`.
+*   `V`: `f32` \
+    <code>V **AbsDiff**(V a, V b)</code>: returns `|a[i] - b[i]|` in each lane.
 
-*   `V`: `ui8/16/32`, `f` \
-    <code>V **Max**(V a, V b)</code>: returns `max(a[i], b[i])`.
+*   `V`: `{u,i}{8,16}` \
+    <code>V **SaturatedAdd**(V a, V b)</code> returns `a[i] + b[i]` saturated to
+    the minimum/maximum representable value.
 
-*   `V`: `ui8/16/32`, `f` \
-    <code>V **Clamp**(V a, V lo, V hi)</code>: returns `a[i]` clamped to
+*   `V`: `{u,i}{8,16}` \
+    <code>V **SaturatedSub**(V a, V b)</code> returns `a[i] - b[i]` saturated to
+    the minimum/maximum representable value.
+
+*   `V`: `{u}{8,16}` \
+    <code>V **AverageRound**(V a, V b)</code> returns `(a[i] + b[i] + 1) / 2`.
+
+*   <code>V **Min**(V a, V b)</code>: returns `min(a[i], b[i])`.
+
+*   <code>V **Max**(V a, V b)</code>: returns `max(a[i], b[i])`.
+
+*   <code>V **Clamp**(V a, V lo, V hi)</code>: returns `a[i]` clamped to
     `[lo[i], hi[i]]`.
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **operator/**(V a, V b)</code>: returns `a[i] / b[i]` in each lane.
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **Sqrt**(V a)</code>: returns `sqrt(a[i])`.
 
 *   `V`: `f32` \
@@ -190,29 +202,23 @@ possibly with the specified size in bits of `T`.
     <code>V **ApproximateReciprocal**(V a)</code>: returns an approximation of
     `1.0 / a[i]`.
 
-*   `V`: `f32` \
-    <code>V **AbsDiff**(V a, V b)</code>: returns `|a[i] - b[i]|` in each lane.
-
-*   `V`: `if` \
-    <code>V **Neg**(V a)</code>: returns `-a[i]`.
-
 #### Multiply
 
-*   `V`: `ui16/32` \
-    <code>V <b>operator*</b>(V a, V b)</code>: returns the lower half of
-    `a[i] * b[i]` in each lane.
+*   `V`: `{u,i}{16,32}` \
+    <code>V <b>operator*</b>(V a, V b)</code>: returns the lower half of `a[i] *
+    b[i]` in each lane.
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V <b>operator*</b>(V a, V b)</code>: returns `a[i] * b[i]` in each
     lane.
 
 *   `V`: `i16` \
-    <code>V **MulHigh**(V a, V b)</code>: returns the upper half of
-    `a[i] * b[i]` in each lane.
+    <code>V **MulHigh**(V a, V b)</code>: returns the upper half of `a[i] *
+    b[i]` in each lane.
 
-*   `V`: `ui32` \
-    <code>V **MulEven**(V a, V b)</code>: returns double-wide result of
-    `a[i] * b[i]` for every even `i`, in lanes `i` (lower) and `i + 1` (upper).
+*   `V`: `{u,i}{32}` \
+    <code>V **MulEven**(V a, V b)</code>: returns double-wide result of `a[i] *
+    b[i]` for every even `i`, in lanes `i` (lower) and `i + 1` (upper).
 
 #### Fused multiply-add
 
@@ -221,66 +227,64 @@ and faster than separate multiplication followed by addition. The `*Sub`
 variants are somewhat slower on ARM; it is preferable to replace them with
 `MulAdd` using a negated constant.
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **MulAdd**(V a, V b, V c)</code>: returns `a[i] * b[i] + c[i]`.
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **NegMulAdd**(V a, V b, V c)</code>: returns `-a[i] * b[i] + c[i]`.
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **MulSub**(V a, V b, V c)</code>: returns `a[i] * b[i] - c[i]`.
 
-*   `V`: `f` \
-    <code>V **NegMulSub**(V a, V b, V c)</code>: returns
-    `-a[i] * b[i] - c[i]`.
+*   `V`: `{f}` \
+    <code>V **NegMulSub**(V a, V b, V c)</code>: returns `-a[i] * b[i] - c[i]`.
 
 #### Shifts
 
-**Note**: it is generally fastest to shift by a compile-time constant number of
-bits. ARM requires the count be less than the lane size.
+**Note**: Counts not in `[0, sizeof(T)*8)` yield implementation-defined results.
+Left-shifting signed `T` and right-shifting positive signed `T` is the same as
+shifting `MakeUnsigned<T>` and casting to `T`. Right-shifting negative signed
+`T` is the same as an unsigned shift, except that 1-bits are shifted in.
 
-*   `V`: `ui16/32/64` \
-    <code>V **ShiftLeft**&lt;int&gt;(V a)</code> returns `a[i] <<` a
-    compile-time constant count.
+Compile-time constant shifts, generally the most efficient variant:
 
-*   `V`: `u16/32/64`, `i16/32` \
-    <code>V **ShiftRight**&lt;int&gt;(V a)</code> returns `a[i] >>` a
-    compile-time constant count. Inserts zero or sign bit(s) depending on `V`.
+*   `V`: `{u,i}{16,32,64}` \
+    <code>V **ShiftLeft**&lt;int&gt;(V a)</code> returns `a[i] << int`.
 
-**Note**: Vectors must be `HWY_CAPPED(T, HWY_VARIABLE_SHIFT_LANES(T))`:
+*   `V`: `{u,i}{16,32,64}` \
+    <code>V **ShiftRight**&lt;int&gt;(V a)</code> returns `a[i] >> int`.
 
-*   `V`: `ui32/64` \
-    <code>V **operator<<**(V a, V b)</code> returns `a[i] << b[i]`, which is
-    zero when `b[i] >= sizeof(T)*8`.
+Shift all lanes by the same (not necessarily compile-time constant) amount:
 
-*   `V`: `u32/64`, `i32` \
-    <code>V **operator>>**(V a, V b)</code> returns `a[i] >> b[i]`, which is
-    zero when `b[i] >= sizeof(T)*8`. Inserts zero or sign bit(s).
-
-**Note**: the following are only provided if `HWY_VARIABLE_SHIFT_LANES(T) == 1`:
-
-*   `V`: `ui16/32/64` \
+*   `V`: `{u,i}{16,32,64}` \
     <code>V **ShiftLeftSame**(V a, int bits)</code> returns `a[i] << bits`.
 
-*   `V`: `u16/32/64`, `i16/32` \
+*   `V`: `{u,i}{16,32,64}` \
     <code>V **ShiftRightSame**(V a, int bits)</code> returns `a[i] >> bits`.
-    Inserts 0 or sign bit(s).
+
+Per-lane variable shifts (slow if SSE4, or Shr i64 on AVX2):
+
+*   `V`: `{u,i}{16,32,64}` \
+    <code>V **operator<<**(V a, V b)</code> returns `a[i] << b[i]`.
+
+*   `V`: `{u,i}{16,32,64}` \
+    <code>V **operator>>**(V a, V b)</code> returns `a[i] >> b[i]`.
 
 #### Floating-point rounding
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **Round**(V a)</code>: returns `a[i]` rounded towards the nearest
     integer, with ties to even.
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **Trunc**(V a)</code>: returns `a[i]` rounded towards zero
     (truncate).
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **Ceil**(V a)</code>: returns `a[i]` rounded towards positive
     infinity (ceiling).
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **Floor**(V a)</code>: returns `a[i]` rounded towards negative
     infinity.
 
@@ -288,14 +292,17 @@ bits. ARM requires the count be less than the lane size.
 
 These operate on individual bits within each lane.
 
-*   `V`: `ui` \
+*   `V`: `{u,i}` \
     <code>V **operator&**(V a, V b)</code>: returns `a[i] & b[i]`.
 
-*   `V`: `ui` \
+*   `V`: `{u,i}` \
     <code>V **operator|**(V a, V b)</code>: returns `a[i] | b[i]`.
 
-*   `V`: `ui` \
+*   `V`: `{u,i}` \
     <code>V **operator^**(V a, V b)</code>: returns `a[i] ^ b[i]`.
+
+*   `V`: `{u,i}` \
+    <code>V **Not**(V v)</code>: returns `~v[i]`.
 
 For floating-point types, builtin operators are not always available, so
 non-operator functions (also available for integers) must be used:
@@ -308,45 +315,85 @@ non-operator functions (also available for integers) must be used:
 
 *   <code>V **AndNot**(V a, V b)</code>: returns `~a[i] & b[i]`.
 
-Special functions for floating-point types:
+Special functions for signed types:
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **CopySign**(V a, V b)</code>: returns the number with the magnitude
     of `a` and sign of `b`.
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>V **CopySignToAbs**(V a, V b)</code>: as above, but potentially
     slightly more efficient; requires the first argument to be non-negative.
+
+*   `V`: `i32/64` \
+    <code>V **BroadcastSignBit(V a)</code> returns `a[i] < 0 ? -1 : 0`.
 
 ### Masks
 
 Let `M` denote a mask capable of storing true/false for each lane.
 
-*   <code>M **MaskFromVec**(V v)</code>: returns false in lane `i` if
-    `v[i] == 0`, or true if `v[i]` has all bits set.
+*   <code>M1 **RebindMask**(D, M2 m)</code>: returns same mask bits as `m`, but
+    reinterpreted as a mask for lanes of type `TFromD<D>`. `M1` and `M2` must
+    have the same number of lanes.
 
-*   <code>V **VecFromMask**(M m)</code>: returns 0 in lane `i` if
-    `m[i] == false`, otherwise all bits set.
+*   <code>M **Not**(M m)</code>: returns mask of elements indicating whether the
+    input mask element was not set.
 
-*   <code>V **IfThenElse**(M mask, V yes, V no)</code>:
-    returns `mask[i] ? yes[i] : no[i]`.
-*   <code>V **IfThenElseZero**(M mask, V yes)</code>:
-    returns `mask[i] ? yes[i] : 0`.
-*   <code>V **IfThenZeroElse**(M mask, V no)</code>:
-    returns `mask[i] ? 0 : no[i]`.
+*   <code>M **And**(M a, M b)</code>: returns mask of elements indicating
+    whether both input mask elements were set.
+
+*   <code>M **AndNot**(M not_a, M b)</code>: returns mask of elements indicating
+    whether not_a is not set and b is set.
+
+*   <code>M **Or**(M a, M b)</code>: returns mask of elements indicating whether
+    either input mask element was set.
+
+*   <code>M **Xor**(M a, M b)</code>: returns mask of elements indicating
+    whether exactly one input mask element was set.
+
+*   <code>M **MaskFromVec**(V v)</code>: returns false in lane `i` if `v[i] ==
+    0`, or true if `v[i]` has all bits set.
+
+*   <code>V **VecFromMask**(D, M m)</code>: returns 0 in lane `i` if `m[i] ==
+    false`, otherwise all bits set.
+
+*   <code>V **VecFromMask**(M m)</code>: returns 0 in lane `i` if `m[i] ==
+    false`, otherwise all bits set. DEPRECATED and will be removed before 1.0.
+
+*   <code>V **IfThenElse**(M mask, V yes, V no)</code>: returns `mask[i] ?
+    yes[i] : no[i]`.
+
+*   <code>V **IfThenElseZero**(M mask, V yes)</code>: returns `mask[i] ?
+    yes[i] : 0`.
+
+*   <code>V **IfThenZeroElse**(M mask, V no)</code>: returns `mask[i] ? 0 :
+    no[i]`.
 
 *   <code>V **ZeroIfNegative**(V v)</code>: returns `v[i] < 0 ? 0 : v[i]`.
 
-*   <code>bool **AllTrue**(M m)</code>: returns whether all `m[i]` are
-    true.
-*   <code>bool **AllFalse**(M m)</code>: returns whether all `m[i]` are
-    false.
+*   <code>bool **AllTrue**(M m)</code>: returns whether all `m[i]` are true.
 
-*   <code>uint64_t **BitsFromMask**(M m)</code>: returns `sum{1 << i}`
-    for all indices `i` where `m[i]` is true.
+*   <code>bool **AllFalse**(M m)</code>: returns whether all `m[i]` are false.
 
-*   <code>size_t **CountTrue**(M m)</code>: returns how many of `m[i]` are
-    true [0, N]. This is typically more expensive than AllTrue/False.
+*   <code>size_t **StoreMaskBits**(M m, uint8_t* p)</code>: stores a bit array
+    indicating whether `m[i]` is true, in ascending order of `i`, filling the
+    bits of each byte from least to most significant, then proceeding to the
+    next byte. Returns the number of (partial) bytes written.
+
+*   <code>size_t **CountTrue**(M m)</code>: returns how many of `m[i]` are true
+    [0, N]. This is typically more expensive than AllTrue/False.
+
+*   `V`: `{u,i,f}{32,64}` \
+    <code>V **Compress**(V v, M m)</code>: returns `r` such that `r[n]` is
+    `v[i]`, with `i` the n-th lane index (starting from 0) where `m[i]` is true.
+    Compacts lanes whose mask is set into the lower lanes; upper lanes are
+    implementation-defined.
+
+*   `V`: `{u,i,f}{32,64}` \
+    <code>size_t **CompressStore**(V v, M m, D, T* aligned)</code>: writes lanes
+    whose mask is set into `aligned`, starting from lane 0. Returns
+    `CountTrue(m)`, the number of valid lanes. All subsequent lanes may be
+    overwritten! Alignment ensures inactive lanes will not cause faults.
 
 ### Comparisons
 
@@ -354,17 +401,19 @@ These return a mask (see above) indicating whether the condition is true.
 
 *   <code>M **operator==**(V a, V b)</code>: returns `a[i] == b[i]`.
 
-*   `V`: `if` \
+*   `V`: `{i,f}` \
     <code>M **operator&lt;**(V a, V b)</code>: returns `a[i] < b[i]`.
-*   `V`: `if` \
+
+*   `V`: `{i,f}` \
     <code>M **operator&gt;**(V a, V b)</code>: returns `a[i] > b[i]`.
 
-*   `V`: `f` \
+*   `V`: `{f}` \
     <code>M **operator&lt;=**(V a, V b)</code>: returns `a[i] <= b[i]`.
-*   `V`: `f` \
+
+*   `V`: `{f}` \
     <code>M **operator&gt;=**(V a, V b)</code>: returns `a[i] >= b[i]`.
 
-*   `V`: `ui` \
+*   `V`: `{u,i}` \
     <code>M **TestBit**(V v, V bit)</code>: returns `(v[i] & bit[i]) == bit[i]`.
     `bit[i]` must have exactly one bit set.
 
@@ -381,24 +430,23 @@ either naturally-aligned (`aligned`) or possibly unaligned (`p`).
 *   <code>Vec&lt;D&gt; **LoadU**(D, const T* p)</code>: returns `p[i]`.
 
 *   <code>Vec&lt;D&gt; **LoadDup128**(D, const T* p)</code>: returns one 128-bit
-    block loaded from `p` and broadcasted into all 128-bit block\[s\]. This
-    enables a specialized `U32FromU8` that avoids a 3-cycle overhead on
-    AVX2/AVX-512. This may be faster than broadcasting single values, and is
-    more convenient than preparing constants for the maximum vector length.
+    block loaded from `p` and broadcasted into all 128-bit block\[s\]. This may
+    be faster than broadcasting single values, and is more convenient than
+    preparing constants for the actual vector length.
 
 #### Gather
 
 **Note**: Vectors must be `HWY_CAPPED(T, HWY_GATHER_LANES(T))`:
 
-*   `V`,`VI`: (`uif32,i32`), (`uif64,i64`) \
+*   `V`,`VI`: (`{u,i,f}{32},i32`), (`{u,i,f}{64},i64`) \
     <code>Vec&lt;D&gt; **GatherOffset**(D, const T* base, VI offsets)</code>.
-    Returns elements of base selected by signed/possibly repeated *byte*
-    `offsets[i]`.
+    Returns elements of base selected by possibly repeated *byte* `offsets[i]`.
+    Results are implementation-defined if `offsets[i]` is negative.
 
-*   `V`,`VI`: (`uif32,i32`), (`uif64,i64`) \
+*   `V`,`VI`: (`{u,i,f}{32},i32`), (`{u,i,f}{64},i64`) \
     <code>Vec&lt;D&gt; **GatherIndex**(D, const T* base, VI indices)</code>.
-    Returns vector of `base[indices[i]]`. Indices are signed and need not be
-    unique.
+    Returns vector of `base[indices[i]]`. Indices need not be unique, but
+    results are implementation-defined if they are negative.
 
 #### Store
 
@@ -435,30 +483,32 @@ All functions except Stream are defined in cache_control.h.
     reinterpreted as type `Vec<D>`.
 
 *   `V`,`D`: (`u8,i16`), (`u8,i32`), (`u16,i32`), (`i8,i16`), (`i8,i32`),
-    (`i16,i32`), (`f32,f64`) \
+    (`i16,i32`), (`f16,f32`), (`f32,f64`) \
     <code>Vec&lt;D&gt; **PromoteTo**(D, V part)</code>: returns `part[i]` zero-
-    or sign-extended to the wider `D::T` type.
+    or sign-extended to `MakeWide<T>`.
 
 *   `V`,`D`: `i32,f64` \
     <code>Vec&lt;D&gt; **PromoteTo**(D, V part)</code>: returns `part[i]`
     converted to 64-bit floating point.
 
-*   `V`,`D`: (`u8,u32`) \
-    <code>Vec&lt;D&gt; **U32FromU8**(V)</code>: special-case `u8` to `u32`
-    conversion when all blocks of `V` are identical, e.g. from `LoadDup128`.
-
 *   `V`,`D`: (`u32,u8`) \
     <code>Vec&lt;D&gt; **U8FromU32**(V)</code>: special-case `u32` to `u8`
     conversion when all lanes of `V` are already clamped to `[0, 256)`.
 
+`DemoteTo` and float-to-int `ConvertTo` return the closest representable value
+if the input exceeds the destination range.
+
 *   `V`,`D`: (`i16,i8`), (`i32,i8`), (`i32,i16`), (`i16,u8`), (`i32,u8`),
     (`i32,u16`), (`f64,f32`) \
     <code>Vec&lt;D&gt; **DemoteTo**(D, V a)</code>: returns `a[i]` after packing
-    with signed/unsigned saturation, i.e. a vector with narrower type `D::T`.
+    with signed/unsigned saturation to `MakeNarrow<T>`.
 
 *   `V`,`D`: `f64,i32` \
     <code>Vec&lt;D&gt; **DemoteTo**(D, V a)</code>: rounds floating point
     towards zero and converts the value to 32-bit integers.
+
+*   `V`,`D`: `f32,f16` \
+    <code>Vec&lt;D&gt; **DemoteTo**(D, V a)</code>: narrows float to half.
 
 *   `V`,`D`: (`i32`,`f32`), (`i64`,`f64`) \
     <code>Vec&lt;D&gt; **ConvertTo**(D, V)</code>: converts an integer value to
@@ -473,17 +523,17 @@ All functions except Stream are defined in cache_control.h.
 
 ### Swizzle
 
-*   <code>T **GetLane**(V)</code>: returns lane 0 within `V`. This is useful
-    for extracting `SumOfLanes` results.
+*   <code>T **GetLane**(V)</code>: returns lane 0 within `V`. This is useful for
+    extracting `SumOfLanes` results.
 
-*   <code>V2 **Upper/LowerHalf**(V)</code>: returns upper or lower half of
-    the vector `V`.
+*   <code>V2 **Upper/LowerHalf**(V)</code>: returns upper or lower half of the
+    vector `V`.
 
-*   <code>V **ZeroExtendVector**(V2)</code>: returns vector whose UpperHalf is
-    zero and whose LowerHalf is the argument.
+*   <code>V **ZeroExtendVector**(V2)</code>: returns vector whose `UpperHalf` is
+    zero and whose `LowerHalf` is the argument.
 
-*   <code>V **Combine**(V2, V2)</code>: returns vector whose UpperHalf is
-    the first argument and whose LowerHalf is the second argument.
+*   <code>V **Combine**(V2, V2)</code>: returns vector whose `UpperHalf` is the
+    first argument and whose `LowerHalf` is the second argument.
 
 *   <code>V **OddEven**(V a, V b)</code>: returns a vector whose odd lanes are
     taken from `a` and the even lanes from `b`.
@@ -491,74 +541,72 @@ All functions except Stream are defined in cache_control.h.
 **Note**: if vectors are larger than 128 bits, the following operations split
 their operands into independently processed 128-bit *blocks*.
 
-*   `V`: `ui16/32/64`, `f` \
+*   `V`: `{u,i}{16,32,64}, {f}` \
     <code>V **Broadcast**&lt;int i&gt;(V)</code>: returns individual *blocks*,
     each with lanes set to `input_block[i]`, `i = [0, 16/sizeof(T))`.
 
-*   `Ret`: double-width `u/i`; `V`: `u8/16/32`, `i8/16/32` \
+*   `Ret`: `MakeWide<T>`; `V`: `{u,i}{8,16,32}` \
     <code>Ret **ZipLower**(V a, V b)</code>: returns the same bits as
-    `InterleaveLower`, except that `Ret` is a vector with double-width lanes
-    (required in order to use this operation with scalars).
+    `InterleaveLower`, but repartitioned into double-width lanes (required in
+    order to use this operation with scalars).
+
+*   `V`: `{u,i}` \
+    <code>V **TableLookupBytes**(V bytes, V from)</code>: returns
+    `bytes[from[i]]`. Uses byte lanes regardless of the actual vector types.
+    Results are implementation-defined if `from[i] >= HWY_MIN(vector size, 16)`.
 
 **Note**: the following are only available for full vectors (`N` > 1), and split
 their operands into independently processed 128-bit *blocks*:
 
-*   `Ret`: double-width u/i; `V`: `u8/16/32`, `i8/16/32` \
+*   `Ret`: `MakeWide<T>`; `V`: `{u,i}{8,16,32}` \
     <code>Ret **ZipUpper**(V a, V b)</code>: returns the same bits as
-    `InterleaveUpper`, except that `Ret` is a vector with double-width lanes
-    (required in order to use this operation with scalars).
+    `InterleaveUpper`, but repartitioned into double-width lanes (required in
+    order to use this operation with scalars)
 
-*   `V`: `ui` \
+*   `V`: `{u,i}` \
     <code>V **ShiftLeftBytes**&lt;int&gt;(V)</code>: returns the result of
     shifting independent *blocks* left by `int` bytes \[1, 15\].
 
-*   `V`: \
-    <code>V **ShiftLeftLanes**&lt;int&gt;(V)</code>: returns the result of
+*   <code>V **ShiftLeftLanes**&lt;int&gt;(V)</code>: returns the result of
     shifting independent *blocks* left by `int` lanes.
 
-*   `V`: `ui` \
+*   `V`: `{u,i}` \
     <code>V **ShiftRightBytes**&lt;int&gt;(V)</code>: returns the result of
     shifting independent *blocks* right by `int` bytes \[1, 15\].
 
-*   `V`: \
-    <code>V **ShiftRightLanes**&lt;int&gt;(V)</code>: returns the result of
+*   <code>V **ShiftRightLanes**&lt;int&gt;(V)</code>: returns the result of
     shifting independent *blocks* right by `int` lanes.
 
-*   `V`: \
+*   `V`: `{u,i}` \
     <code>V **CombineShiftRightBytes**&lt;int&gt;(V hi, V lo)</code>: returns a
     vector of *blocks* each the result of shifting two concatenated *blocks*
     `hi[i] || lo[i]` right by `int` bytes \[1, 16).
 
-*   `V`: \
-    <code>V **CombineShiftRightLanes**&lt;int&gt;(V hi, V lo)</code>: returns a
+*   <code>V **CombineShiftRightLanes**&lt;int&gt;(V hi, V lo)</code>: returns a
     vector of *blocks* each the result of shifting two concatenated *blocks*
     `hi[i] || lo[i]` right by `int` lanes \[1, 16/sizeof(T)).
 
-*   `V`: `ui`; `VI`: `ui` \
-    <code>V **TableLookupBytes**(V bytes, VI from)</code>: returns *blocks* with
-    `bytes[from[i]]`, or zero if bit 7 of byte `from[i]` is set.
-
-*   `V`: `uif32` \
+*   `V`: `{u,i,f}{32}` \
     <code>V **Shuffle2301**(V)</code>: returns *blocks* with 32-bit halves
     swapped inside 64-bit halves.
 
-*   `V`: `uif32` \
+*   `V`: `{u,i,f}{32}` \
     <code>V **Shuffle1032**(V)</code>: returns *blocks* with 64-bit halves
     swapped.
 
-*   `V`: `uif64` \
+*   `V`: `{u,i,f}{64}` \
     <code>V **Shuffle01**(V)</code>: returns *blocks* with 64-bit halves
     swapped.
 
-*   `V`: `uif32` \
+*   `V`: `{u,i,f}{32}` \
     <code>V **Shuffle0321**(V)</code>: returns *blocks* rotated right (toward
     the lower end) by 32 bits.
 
-*   `V`: `uif32` \
+*   `V`: `{u,i,f}{32}` \
     <code>V **Shuffle2103**(V)</code>: returns *blocks* rotated left (toward the
     upper end) by 32 bits.
 
-*   `V`: `uif32` \
+*   `V`: `{u,i,f}{32}` \
     <code>V **Shuffle0123**(V)</code>: returns *blocks* with lanes in reverse
     order.
 
@@ -587,7 +635,7 @@ more expensive on AVX2/AVX-512 than within-block operations.
     of the concatenation of `hi` and `lo` without splitting into blocks. Unlike
     the other variants, this does not incur a block-crossing penalty on AVX2.
 
-*   `V`: `uif32` \
+*   `V`: `{u,i,f}{32}` \
     <code>V **TableLookupLanes**(V a, VI)</code> returns a vector of
     `a[indices[i]]`, where `VI` is from `SetTableIndices(D, &indices[0])`.
 
@@ -603,26 +651,24 @@ lanes at no extra cost; you can use `GetLane` to obtain the value.
 Being a horizontal operation (across lanes of the same vector), these are slower
 than normal SIMD operations and are typically used outside critical loops.
 
-*   `V`: `u8`; `Ret`: `u64` \
-    <code>Ret **SumsOfU8x8**(V)</code>: returns the sums of 8 consecutive
-    bytes in each 64-bit lane.
+*   `V`: `{u,i,f}{32,64}` \
+    <code>V **SumOfLanes**(V v)</code>: returns the sum of all lanes in each
+    lane.
 
-*   `V`: `uif32/64` \
-    <code>V **SumOfLanes**(V v)</code>: returns the sum of all lanes in
-    each lane.
-*   `V`: `uif32/64` \
-    <code>V **MinOfLanes**(V v)</code>: returns the minimum-valued lane in
-    each lane.
-*   `V`: `uif32/64` \
-    <code>V **MaxOfLanes**(V v)</code>: returns the maximum-valued lane in
-    each lane.
+*   `V`: `{u,i,f}{32,64}` \
+    <code>V **MinOfLanes**(V v)</code>: returns the minimum-valued lane in each
+    lane.
+
+*   `V`: `{u,i,f}{32,64}` \
+    <code>V **MaxOfLanes**(V v)</code>: returns the maximum-valued lane in each
+    lane.
 
 ## Advanced macros
 
-Let `Target` denote an instruction set: `SCALAR/SSE4/AVX2/AVX3/PPC8/NEON/WASM`.
-Targets are only used if enabled (i.e. not broken nor disabled). Baseline means
-the compiler is allowed to generate such instructions (implying the target CPU
-would have to support them).
+Let `Target` denote an instruction set:
+`SCALAR/SSE4/AVX2/AVX3/PPC8/NEON/WASM/RVV`. Targets are only used if enabled
+(i.e. not broken nor disabled). Baseline means the compiler is allowed to
+generate such instructions (implying the target CPU would have to support them).
 
 *   `HWY_Target=##` are powers of two uniquely identifying `Target`.
 
@@ -650,6 +696,7 @@ would have to support them).
     `#if HWY_TARGET != HWY_SCALAR || HWY_IDE` avoids code appearing greyed out.
 
 The following signal capabilities and expand to 1 or 0.
+
 *   `HWY_CAP_INTEGER64`: support for 64-bit signed/unsigned integer lanes.
 *   `HWY_CAP_FLOAT64`: support for double-precision floating-point lanes.
 *   `HWY_CAP_GE256`: the current target supports vectors of >= 256 bits.
@@ -659,12 +706,18 @@ The following indicate the maximum number of lanes for certain operations. For
 targets that support the feature/operation, the macro evaluates to
 `HWY_LANES(T)`, otherwise 1. Using `HWY_CAPPED(T, HWY_GATHER_LANES(T))`
 generates the best possible code (or scalar fallback) from the same source code.
+
 *   `HWY_GATHER_LANES(T)`: supports GatherIndex/Offset.
 *   `HWY_VARIABLE_SHIFT_LANES(T)`: supports per-lane shift amounts (v1 << v2).
+    DEPRECATED, this always matches HWY_LANES(T) and will be removed.
 
-As above, but the feature implies the type so there is no T parameter:
-*   `HWY_COMPARE64_LANES`: 64-bit signed integer comparisons.
-*   `HWY_MINMAX64_LANES`: 64-bit signed/unsigned integer min/max.
+As above, but the feature implies the type so there is no T parameter, thus
+these can be used in `#if` expressions.
+
+*   `HWY_COMPARE64_LANES`: 64-bit signed integer comparisons. DEPRECATED, this
+    always matches HWY_LANES(int64_t) and will be removed.
+*   `HWY_MINMAX64_LANES`: 64-bit signed/unsigned integer min/max. DEPRECATED,
+    this always matches HWY_LANES(int64_t) and will be removed.
 
 ## Detecting supported targets
 

@@ -81,7 +81,8 @@
 #define HWY_NORETURN __declspec(noreturn)
 #define HWY_LIKELY(expr) (expr)
 #define HWY_UNLIKELY(expr) (expr)
-#define HWY_DIAGNOSTICS(tokens) __pragma(warning(tokens))
+#define HWY_PRAGMA(tokens) __pragma(tokens)
+#define HWY_DIAGNOSTICS(tokens) HWY_PRAGMA(warning(tokens))
 #define HWY_DIAGNOSTICS_OFF(msc, gcc) HWY_DIAGNOSTICS(msc)
 #define HWY_MAYBE_UNUSED
 #define HWY_HAS_ASSUME_ALIGNED 0
@@ -201,12 +202,21 @@
 #define HWY_ARCH_WASM 0
 #endif
 
-#if HWY_ARCH_X86 + HWY_ARCH_PPC + HWY_ARCH_ARM + HWY_ARCH_WASM != 1
+#ifdef __riscv
+#define HWY_ARCH_RVV 1
+#else
+#define HWY_ARCH_RVV 0
+#endif
+
+#if (HWY_ARCH_X86 + HWY_ARCH_PPC + HWY_ARCH_ARM + HWY_ARCH_WASM + \
+     HWY_ARCH_RVV) != 1
 #error "Must detect exactly one platform"
 #endif
 
 //------------------------------------------------------------------------------
 // Macros
+
+#define HWY_API static HWY_INLINE HWY_FLATTEN HWY_MAYBE_UNUSED
 
 #define HWY_CONCAT_IMPL(a, b) a##b
 #define HWY_CONCAT(a, b) HWY_CONCAT_IMPL(a, b)
@@ -245,12 +255,16 @@
 
 namespace hwy {
 
-// See also HWY_ALIGNMENT - aligned_allocator aligns to the larger of that and
-// the vector size, whose upper bound is specified here.
-
+// Not guaranteed to be an upper bound, but the alignment established by
+// aligned_allocator is HWY_MAX(HWY_ALIGNMENT, kMaxVectorSize).
 #if HWY_ARCH_X86
 static constexpr size_t kMaxVectorSize = 64;  // AVX-512
 #define HWY_ALIGN_MAX alignas(64)
+#elif HWY_ARCH_RVV
+// Not actually an upper bound on the size, but this value prevents crossing a
+// 4K boundary (relevant on Andes).
+static constexpr size_t kMaxVectorSize = 4096;
+#define HWY_ALIGN_MAX alignas(8)  // only elements need be aligned
 #else
 static constexpr size_t kMaxVectorSize = 16;
 #define HWY_ALIGN_MAX alignas(16)
@@ -258,6 +272,15 @@ static constexpr size_t kMaxVectorSize = 16;
 
 HWY_NORETURN void HWY_FORMAT(3, 4)
     Abort(const char* file, int line, const char* format, ...);
+
+// Match [u]int##_t naming scheme so rvv-inl.h macros can obtain the type name
+// by concatenating base type and bits.
+struct float16_t {
+  // __fp16 cannot be used as a function parameter in clang, so use a wrapper.
+  uint16_t bits;
+};
+using float32_t = float;
+using float64_t = double;
 
 template <typename T>
 constexpr bool IsFloat() {
@@ -302,14 +325,48 @@ constexpr inline size_t RoundUpTo(size_t what, size_t align) {
 }
 
 // Undefined results for x == 0.
-static HWY_INLINE HWY_MAYBE_UNUSED size_t
-Num0BitsBelowLS1Bit_Nonzero32(const uint32_t x) {
+HWY_API size_t Num0BitsBelowLS1Bit_Nonzero32(const uint32_t x) {
 #ifdef _MSC_VER
-  unsigned long index;
+  unsigned long index;  // NOLINT
   _BitScanForward(&index, x);
   return index;
 #else
   return static_cast<size_t>(__builtin_ctz(x));
+#endif
+}
+
+HWY_API size_t PopCount(uint64_t x) {
+#if HWY_COMPILER_CLANG || HWY_COMPILER_GCC
+  return static_cast<size_t>(__builtin_popcountll(x));
+#elif HWY_COMPILER_MSVC && HWY_ARCH_X86_64
+  return _mm_popcnt_u64(x);
+#elif HWY_COMPILER_MSVC
+  return _mm_popcnt_u32(uint32_t(x)) + _mm_popcnt_u32(uint32_t(x >> 32));
+#else
+  x -= ((x >> 1) & 0x55555555U);
+  x = (((x >> 2) & 0x33333333U) + (x & 0x33333333U));
+  x = (((x >> 4) + x) & 0x0F0F0F0FU);
+  x += (x >> 8);
+  x += (x >> 16);
+  x += (x >> 32);
+  x = x & 0x0000007FU;
+  return (unsigned int)x;
+#endif
+}
+
+// The source/destination must not overlap/alias.
+template <size_t kBytes, typename From, typename To>
+HWY_API void CopyBytes(const From* from, To* to) {
+#if HWY_COMPILER_MSVC
+  const uint8_t* HWY_RESTRICT from_bytes =
+      reinterpret_cast<const uint8_t*>(from);
+  uint8_t* HWY_RESTRICT to_bytes = reinterpret_cast<uint8_t*>(to);
+  for (size_t i = 0; i < kBytes; ++i) {
+    to_bytes[i] = from_bytes[i];
+  }
+#else
+  // Avoids horrible codegen on Clang (series of PINSRB)
+  __builtin_memcpy(to, from, kBytes);
 #endif
 }
 

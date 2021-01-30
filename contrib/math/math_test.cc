@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cfloat>  // FLT_MAX
 #include <cmath>
-#include <cstring>  // memcpy
+#include <iostream>
 #include <type_traits>
 
 // clang-format off
@@ -28,26 +29,6 @@
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
-
-template <class Out, class In>
-inline Out BitCast(const In& in) {
-  static_assert(sizeof(Out) == sizeof(In), "");
-  Out out;
-  std::memcpy(&out, &in, sizeof(out));
-  return out;
-}
-
-// Computes the difference in units of last place between x and y.
-inline uint32_t ComputeUlpDelta(float x, float y) {
-  const uint32_t ux = BitCast<uint32_t>(x + 0.0f);  // -0.0 -> +0.0
-  const uint32_t uy = BitCast<uint32_t>(y + 0.0f);  // -0.0 -> +0.0
-  return std::abs(BitCast<int32_t>(ux - uy));
-}
-inline uint64_t ComputeUlpDelta(double x, double y) {
-  const uint64_t ux = BitCast<uint64_t>(x + 0.0);  // -0.0 -> +0.0
-  const uint64_t uy = BitCast<uint64_t>(y + 0.0);  // -0.0 -> +0.0
-  return std::abs(BitCast<int64_t>(ux - uy));
-}
 
 template <class T, class D>
 void TestMath(const std::string name, T (*fx1)(T), Vec<D> (*fxN)(D, Vec<D>),
@@ -90,9 +71,9 @@ void TestMath(const std::string name, T (*fx1)(T), Vec<D> (*fxN)(D, Vec<D>),
 
       const auto ulp = ComputeUlpDelta(actual, expected);
       max_ulp = std::max<uint64_t>(max_ulp, ulp);
-      ASSERT_LE(ulp, max_error_ulp)
-          << name << "<" << (kIsF32 ? "F32x" : "F64x") << Lanes(d) << ">("
-          << value << ") expected: " << expected << " actual: " << actual;
+      HWY_ASSERT(ulp <= max_error_ulp);
+      // << name << "<" << (kIsF32 ? "F32x" : "F64x") << Lanes(d) << ">("
+      // << value << ") expected: " << expected << " actual: " << actual;
     }
   }
   std::cout << (kIsF32 ? "F32x" : "F64x") << Lanes(d)
@@ -122,12 +103,21 @@ const float kNearOneF = BitCast<float>(0x3F7FFFFF);
 const double kNearOneD = BitCast<double>(0x3FEFFFFFFFFFFFFFULL);
 
 // clang-format off
+DEFINE_MATH_TEST(Acos,
+  std::acos,  Acos,  -1.0,       +1.0,        3,  // NEON is 3 instead of 2
+  std::acos,  Acos,  -1.0,       +1.0,        2)
 DEFINE_MATH_TEST(Acosh,
   std::acosh, Acosh, +1.0,       +FLT_MAX,    3,
   std::acosh, Acosh, +1.0,       +DBL_MAX,    3)
+DEFINE_MATH_TEST(Asin,
+  std::asin,  Asin,  -1.0,       +1.0,        3,  // NEON is 3 instead of 2
+  std::asin,  Asin,  -1.0,       +1.0,        2)
 DEFINE_MATH_TEST(Asinh,
   std::asinh, Asinh, -FLT_MAX,   +FLT_MAX,    3,
   std::asinh, Asinh, -DBL_MAX,   +DBL_MAX,    3)
+DEFINE_MATH_TEST(Atan,
+  std::atan,  Atan,  -FLT_MAX,   +FLT_MAX,    3,
+  std::atan,  Atan,  -DBL_MAX,   +DBL_MAX,    3)
 DEFINE_MATH_TEST(Atanh,
   std::atanh, Atanh, -kNearOneF, +kNearOneF,  4,  // NEON is 4 instead of 3
   std::atanh, Atanh, -kNearOneD, +kNearOneD,  3)
@@ -163,13 +153,12 @@ DEFINE_MATH_TEST(Tanh,
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-namespace hwy {
-
-class HwyMathTest : public hwy::TestWithParamTarget {};
-
-HWY_TARGET_INSTANTIATE_TEST_SUITE_P(HwyMathTest);
+HWY_BEFORE_TEST(HwyMathTest);
+HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAcos);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAcosh);
+HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAsin);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAsinh);
+HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAtan);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAtanh);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllExp);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllExpm1);
@@ -179,6 +168,5 @@ HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllLog1p);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllLog2);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllSinh);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllTanh);
-
-}  // namespace hwy
+HWY_AFTER_TEST();
 #endif

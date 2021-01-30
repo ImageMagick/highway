@@ -24,6 +24,11 @@
 
 namespace hwy {
 
+// API version (https://semver.org/)
+#define HWY_MAJOR 0
+#define HWY_MINOR 11
+#define HWY_PATCH 0
+
 //------------------------------------------------------------------------------
 // Shorthand for descriptors (defined in shared-inl.h) used to select overloads.
 
@@ -32,8 +37,16 @@ namespace hwy {
 // qualify Highway functions with hwy::HWY_NAMESPACE. However, ADL rules for
 // templates require `using hwy::HWY_NAMESPACE::ShiftLeft;` etc. declarations.
 
-// Full (native-width) vector.
-#define HWY_FULL(T) hwy::HWY_NAMESPACE::Simd<T, HWY_LANES(T)>
+// HWY_FULL(T[,LMUL=1]) is a native vector/group. LMUL is the number of
+// registers in the group, and is ignored on targets that do not support groups.
+#define HWY_FULL1(T) hwy::HWY_NAMESPACE::Simd<T, HWY_LANES(T)>
+#define HWY_3TH_ARG(arg1, arg2, arg3, ...) arg3
+// Workaround for MSVC grouping __VA_ARGS__ into a single argument
+#define HWY_FULL_RECOMPOSER(args_with_paren) HWY_3TH_ARG args_with_paren
+// Trailing comma avoids -pedantic false alarm
+#define HWY_CHOOSE_FULL(...) \
+  HWY_FULL_RECOMPOSER((__VA_ARGS__, HWY_FULL2, HWY_FULL1, ))
+#define HWY_FULL(...) HWY_CHOOSE_FULL(__VA_ARGS__())(__VA_ARGS__)
 
 // Vector of up to MAX_N lanes.
 #define HWY_CAPPED(T, MAX_N) \
@@ -55,6 +68,8 @@ namespace hwy {
 // defined), and can be used to deduce the return type of Choose*.
 #if HWY_STATIC_TARGET == HWY_SCALAR
 #define HWY_STATIC_DISPATCH(FUNC_NAME) N_SCALAR::FUNC_NAME
+#elif HWY_STATIC_TARGET == HWY_RVV
+#define HWY_STATIC_DISPATCH(FUNC_NAME) N_RVV::FUNC_NAME
 #elif HWY_STATIC_TARGET == HWY_WASM
 #define HWY_STATIC_DISPATCH(FUNC_NAME) N_WASM::FUNC_NAME
 #elif HWY_STATIC_TARGET == HWY_NEON
@@ -113,6 +128,12 @@ FunctionCache<RetType, Args...> FunctionCacheFactory(RetType (*)(Args...)) {
 #define HWY_CHOOSE_WASM(FUNC_NAME) &N_WASM::FUNC_NAME
 #else
 #define HWY_CHOOSE_WASM(FUNC_NAME) nullptr
+#endif
+
+#if HWY_TARGETS & HWY_RVV
+#define HWY_CHOOSE_RVV(FUNC_NAME) &N_RVV::FUNC_NAME
+#else
+#define HWY_CHOOSE_RVV(FUNC_NAME) nullptr
 #endif
 
 #if HWY_TARGETS & HWY_NEON
@@ -183,10 +204,11 @@ FunctionCache<RetType, Args...> FunctionCacheFactory(RetType (*)(Args...)) {
 // This case still uses a table, although of a single element, to provide the
 // same compile error conditions as with the dynamic dispatch case when multiple
 // targets are being compiled.
-#define HWY_EXPORT(FUNC_NAME)                                                \
-  static decltype(&HWY_STATIC_DISPATCH(FUNC_NAME)) const HWY_DISPATCH_TABLE( \
-      FUNC_NAME)[1] = {&HWY_STATIC_DISPATCH(FUNC_NAME)}
-#define HWY_DYNAMIC_DISPATCH(FUNC_NAME) (*(HWY_DISPATCH_TABLE(FUNC_NAME)[0]))
+#define HWY_EXPORT(FUNC_NAME)                                       \
+  HWY_MAYBE_UNUSED static decltype(&HWY_STATIC_DISPATCH(FUNC_NAME)) \
+      const HWY_DISPATCH_TABLE(FUNC_NAME)[1] = {                    \
+          &HWY_STATIC_DISPATCH(FUNC_NAME)}
+#define HWY_DYNAMIC_DISPATCH(FUNC_NAME) HWY_STATIC_DISPATCH(FUNC_NAME)
 
 #else
 
@@ -213,15 +235,21 @@ FunctionCache<RetType, Args...> FunctionCacheFactory(RetType (*)(Args...)) {
 
 //------------------------------------------------------------------------------
 
-// NOTE: ops/*.h cannot use regular include guards because their definitions
-// depend on HWY_TARGET, e.g. enabling AVX3 instructions on 128-bit vectors, so
-// we want to include them once per target. However, each *-inl.h includes
-// highway.h, so we still need an external per-target include guard.
+// NOTE: the following definitions and ops/*.h depend on HWY_TARGET, so we want
+// to include them once per target, which is ensured by the toggle check.
+// Because ops/*.h are included under it, they do not need their own guard.
 #if defined(HWY_HIGHWAY_PER_TARGET) == defined(HWY_TARGET_TOGGLE)
 #ifdef HWY_HIGHWAY_PER_TARGET
 #undef HWY_HIGHWAY_PER_TARGET
 #else
 #define HWY_HIGHWAY_PER_TARGET
+#endif
+
+#undef HWY_FULL2
+#if HWY_TARGET == HWY_RVV
+#define HWY_FULL2(T, LMUL) hwy::HWY_NAMESPACE::Simd<T, HWY_LANES(T) * (LMUL)>
+#else
+#define HWY_FULL2(T, LMUL) hwy::HWY_NAMESPACE::Simd<T, HWY_LANES(T)>
 #endif
 
 // These define ops inside namespace hwy::HWY_NAMESPACE.
@@ -236,6 +264,8 @@ FunctionCache<RetType, Args...> FunctionCacheFactory(RetType (*)(Args...)) {
 #include "hwy/ops/arm_neon-inl.h"
 #elif HWY_TARGET == HWY_WASM
 #include "hwy/ops/wasm_128-inl.h"
+#elif HWY_TARGET == HWY_RVV
+#include "hwy/ops/rvv-inl.h"
 #elif HWY_TARGET == HWY_SCALAR
 #include "hwy/ops/scalar-inl.h"
 #else
@@ -251,24 +281,18 @@ namespace HWY_NAMESPACE {
 template <class V>
 using LaneType = decltype(GetLane(V()));
 
-// Corresponding vector type, e.g. Vec128<float> for Simd<float, 4>. Useful as
-// the return type of functions that do not take a vector argument, or as an
-// argument type if the function only has a template argument for D.
+// Vector type, e.g. Vec128<float> for Simd<float, 4>. Useful as the return type
+// of functions that do not take a vector argument, or as an argument type if
+// the function only has a template argument for D, or for explicit type names
+// instead of auto. This may be a built-in type.
 template <class D>
 using Vec = decltype(Zero(D()));
 
-// Full vector types. These may be used instead of `auto` for improved clarity,
-// at the cost of reduced generality (cannot express half vectors etc.).
-using U8xN = Vec<HWY_FULL(uint8_t)>;
-using U16xN = Vec<HWY_FULL(uint16_t)>;
-using U32xN = Vec<HWY_FULL(uint32_t)>;
-using U64xN = Vec<HWY_FULL(uint64_t)>;
-using I8xN = Vec<HWY_FULL(int8_t)>;
-using I16xN = Vec<HWY_FULL(int16_t)>;
-using I32xN = Vec<HWY_FULL(int32_t)>;
-using I64xN = Vec<HWY_FULL(int64_t)>;
-using F32xN = Vec<HWY_FULL(float)>;
-using F64xN = Vec<HWY_FULL(double)>;
+// Mask type. Useful as the return type of functions that do not take a mask
+// argument, or as an argument type if the function only has a template argument
+// for D, or for explicit type names instead of auto.
+template <class D>
+using Mask = decltype(MaskFromVec(Zero(D())));
 
 // Returns the closest value to v within [lo, hi].
 template <class V>
@@ -277,7 +301,8 @@ HWY_API V Clamp(const V v, const V lo, const V hi) {
 }
 
 // CombineShiftRightBytes (and ..Lanes) are not available for the scalar target.
-#if HWY_TARGET != HWY_SCALAR
+// TODO(janwas): implement for RVV
+#if HWY_TARGET != HWY_SCALAR && HWY_TARGET != HWY_RVV
 
 template <size_t kLanes, class V>
 HWY_API V CombineShiftRightLanes(const V hi, const V lo) {

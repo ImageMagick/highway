@@ -27,6 +27,25 @@ namespace hwy {
 namespace HWY_NAMESPACE {
 
 // All types.
+struct TestMask {
+  template <typename T, class D>
+  HWY_NOINLINE void operator()(T /*unused*/, D d) {
+    const size_t N = Lanes(d);
+    auto lanes = AllocateAligned<T>(N);
+
+    std::fill(lanes.get(), lanes.get() + N, T(0));
+    const auto actual_false = MaskFromVec(Load(d, lanes.get()));
+    HWY_ASSERT_MASK_EQ(d, MaskFalse(d), actual_false);
+
+    memset(lanes.get(), 0xFF, N * sizeof(T));
+    const auto actual_true = MaskFromVec(Load(d, lanes.get()));
+    HWY_ASSERT_MASK_EQ(d, MaskTrue(d), actual_true);
+  }
+};
+
+HWY_NOINLINE void TestAllMask() { ForAllTypes(ForPartialVectors<TestMask>()); }
+
+// All types.
 struct TestEquality {
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
@@ -34,49 +53,85 @@ struct TestEquality {
     const auto v2b = Iota(d, 2);
     const auto v3 = Iota(d, 3);
 
-    const size_t N = Lanes(d);
-    auto all_false = AllocateAligned<T>(N);
-    auto all_true = AllocateAligned<T>(N);
-    std::fill(all_false.get(), all_false.get() + N, 0);
-    memset(all_true.get(), 0xFF, N * sizeof(T));
+    const auto mask_false = MaskFalse(d);
+    const auto mask_true = MaskTrue(d);
 
-    HWY_ASSERT_VEC_EQ(d, all_false.get(), VecFromMask(v2 == v3));
-    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(v2 == v2));
-    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(v2 == v2b));
+    HWY_ASSERT_MASK_EQ(d, mask_false, Eq(v2, v3));
+    HWY_ASSERT_MASK_EQ(d, mask_true, Eq(v2, v2));
+    HWY_ASSERT_MASK_EQ(d, mask_true, Eq(v2, v2b));
   }
 };
+
+HWY_NOINLINE void TestAllEquality() {
+  ForAllTypes(ForPartialVectors<TestEquality>());
+}
+
+// a > b should be true, verify that for Gt/Lt and with swapped args.
+template <class D>
+void EnsureGreater(D d, TFromD<D> a, TFromD<D> b) {
+  const auto mask_false = MaskFalse(d);
+  const auto mask_true = MaskTrue(d);
+
+  const auto va = Set(d, a);
+  const auto vb = Set(d, b);
+  HWY_ASSERT_MASK_EQ(d, mask_true, Gt(va, vb));
+  HWY_ASSERT_MASK_EQ(d, mask_false, Lt(va, vb));
+
+  // Swapped order
+  HWY_ASSERT_MASK_EQ(d, mask_false, Gt(vb, va));
+  HWY_ASSERT_MASK_EQ(d, mask_true, Lt(vb, va));
+
+  // Also ensure irreflexive
+  HWY_ASSERT_MASK_EQ(d, mask_false, Gt(va, va));
+  HWY_ASSERT_MASK_EQ(d, mask_false, Gt(vb, vb));
+  HWY_ASSERT_MASK_EQ(d, mask_false, Lt(va, va));
+  HWY_ASSERT_MASK_EQ(d, mask_false, Lt(vb, vb));
+}
 
 // Integer and floating-point.
-struct TestStrictT {
+struct TestStrict {
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
-    const auto v2 = Iota(d, 2);
-    const auto vn = Iota(d, -T(Lanes(d)));
+    const T min = LimitsMin<T>();
+    const T max = LimitsMax<T>();
+    const auto v0 = Zero(d);
+    const auto v2 = And(Iota(d, T(2)), Set(d, 127));  // 0..127
+    const auto vn = Neg(v2) - Set(d, 1);              // -1..-128
 
-    const size_t N = Lanes(d);
-    auto all_false = AllocateAligned<T>(N);
-    auto all_true = AllocateAligned<T>(N);
-    std::fill(all_false.get(), all_false.get() + N, 0);
-    memset(all_true.get(), 0xFF, N * sizeof(T));
+    const auto mask_false = MaskFalse(d);
+    const auto mask_true = MaskTrue(d);
 
-    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(v2 > vn));
-    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(vn < v2));
-    HWY_ASSERT_VEC_EQ(d, all_false.get(), VecFromMask(v2 < vn));
-    HWY_ASSERT_VEC_EQ(d, all_false.get(), VecFromMask(vn > v2));
+    // Individual values of interest
+    EnsureGreater(d, 2, 1);
+    EnsureGreater(d, 1, 0);
+    EnsureGreater(d, 0, -1);
+    EnsureGreater(d, -1, -2);
+    EnsureGreater(d, max, max / 2);
+    EnsureGreater(d, max, 1);
+    EnsureGreater(d, max, 0);
+    EnsureGreater(d, max, -1);
+    EnsureGreater(d, max, min);
+    EnsureGreater(d, 0, min);
+    EnsureGreater(d, min / 2, min);
+
+    // Also use Iota to ensure lanes are independent
+    HWY_ASSERT_MASK_EQ(d, mask_true, Gt(v2, vn));
+    HWY_ASSERT_MASK_EQ(d, mask_true, Lt(vn, v2));
+    HWY_ASSERT_MASK_EQ(d, mask_false, Lt(v2, vn));
+    HWY_ASSERT_MASK_EQ(d, mask_false, Gt(vn, v2));
+
+    HWY_ASSERT_MASK_EQ(d, mask_false, Lt(v0, v0));
+    HWY_ASSERT_MASK_EQ(d, mask_false, Lt(v2, v2));
+    HWY_ASSERT_MASK_EQ(d, mask_false, Lt(vn, vn));
+    HWY_ASSERT_MASK_EQ(d, mask_false, Gt(v0, v0));
+    HWY_ASSERT_MASK_EQ(d, mask_false, Gt(v2, v2));
+    HWY_ASSERT_MASK_EQ(d, mask_false, Gt(vn, vn));
   }
 };
 
-HWY_NOINLINE void TestStrict() {
-  const ForPartialVectors<TestStrictT> test;
-
-  // Cannot use ForSignedTypes - need to check HWY_COMPARE64_LANES.
-  test(int8_t());
-  test(int16_t());
-  test(int32_t());
-#if HWY_COMPARE64_LANES > 1
-  test(int64_t());
-#endif
-
+HWY_NOINLINE void TestAllStrict() {
+  const ForExtendableVectors<TestStrict> test;
+  ForSignedTypes(test);
   ForFloatTypes(test);
 }
 
@@ -87,26 +142,19 @@ struct TestWeak {
     const auto v2 = Iota(d, 2);
     const auto vn = Iota(d, -T(Lanes(d)));
 
-    const size_t N = Lanes(d);
-    auto all_false = AllocateAligned<T>(N);
-    auto all_true = AllocateAligned<T>(N);
-    std::fill(all_false.get(), all_false.get() + N, 0);
-    memset(all_true.get(), 0xFF, N * sizeof(T));
+    const auto mask_false = MaskFalse(d);
+    const auto mask_true = MaskTrue(d);
 
-    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(v2 >= v2));
-    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(vn <= vn));
+    HWY_ASSERT_MASK_EQ(d, mask_true, Ge(v2, v2));
+    HWY_ASSERT_MASK_EQ(d, mask_true, Le(vn, vn));
 
-    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(v2 >= vn));
-    HWY_ASSERT_VEC_EQ(d, all_true.get(), VecFromMask(vn <= v2));
+    HWY_ASSERT_MASK_EQ(d, mask_true, Ge(v2, vn));
+    HWY_ASSERT_MASK_EQ(d, mask_true, Le(vn, v2));
 
-    HWY_ASSERT_VEC_EQ(d, all_false.get(), VecFromMask(v2 <= vn));
-    HWY_ASSERT_VEC_EQ(d, all_false.get(), VecFromMask(vn >= v2));
+    HWY_ASSERT_MASK_EQ(d, mask_false, Le(v2, vn));
+    HWY_ASSERT_MASK_EQ(d, mask_false, Ge(vn, v2));
   }
 };
-
-HWY_NOINLINE void TestAllEquality() {
-  ForAllTypes(ForPartialVectors<TestEquality>());
-}
 
 HWY_NOINLINE void TestAllWeak() {
   ForFloatTypes(ForPartialVectors<TestWeak>());
@@ -118,15 +166,9 @@ HWY_NOINLINE void TestAllWeak() {
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-namespace hwy {
-
-class HwyCompareTest : public hwy::TestWithParamTarget {};
-
-HWY_TARGET_INSTANTIATE_TEST_SUITE_P(HwyCompareTest);
-
+HWY_BEFORE_TEST(HwyCompareTest);
 HWY_EXPORT_AND_TEST_P(HwyCompareTest, TestAllEquality);
-HWY_EXPORT_AND_TEST_P(HwyCompareTest, TestStrict);
+HWY_EXPORT_AND_TEST_P(HwyCompareTest, TestAllStrict);
 HWY_EXPORT_AND_TEST_P(HwyCompareTest, TestAllWeak);
-
-}  // namespace hwy
+HWY_AFTER_TEST();
 #endif

@@ -26,6 +26,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "hwy/base.h"
+
 // Clang 3.9 generates VINSERTF128 instead of the desired VBROADCASTF128,
 // which would free up port5. However, inline assembly isn't supported on
 // MSVC, results in incorrect output on GCC 8.3, and raises "invalid output size
@@ -34,9 +36,6 @@
 #ifndef HWY_LOADDUP_ASM
 #define HWY_LOADDUP_ASM 0
 #endif
-
-// Shorthand for implementations of Highway ops.
-#define HWY_API static HWY_INLINE HWY_FLATTEN HWY_MAYBE_UNUSED
 
 namespace hwy {
 
@@ -57,49 +56,117 @@ static_assert(sizeof(GatherIndex64) == 8, "Must be 64-bit type");
 #define HWY_IF_LE64(T, N) hwy::EnableIf<N * sizeof(T) <= 8>* = nullptr
 #define HWY_IF_LE32(T, N) hwy::EnableIf<N * sizeof(T) <= 4>* = nullptr
 
+#define HWY_IF_UNSIGNED(T) hwy::EnableIf<!IsSigned<T>()>* = nullptr
+#define HWY_IF_SIGNED(T) \
+  hwy::EnableIf<IsSigned<T>() && !IsFloat<T>()>* = nullptr
 #define HWY_IF_FLOAT(T) hwy::EnableIf<hwy::IsFloat<T>()>* = nullptr
-// IsSigned<float>() is true, so cannot use that to differentiate int/float.
 #define HWY_IF_NOT_FLOAT(T) hwy::EnableIf<!hwy::IsFloat<T>()>* = nullptr
+
+#define HWY_IF_LANE_SIZE(T, bytes) \
+  hwy::EnableIf<sizeof(T) == (bytes)>* = nullptr
+#define HWY_IF_NOT_LANE_SIZE(T, bytes) \
+  hwy::EnableIf<sizeof(T) != (bytes)>* = nullptr
+
+// Argument is a Simd<T, N>, defined below.
+#define HWY_IF_UNSIGNED_D(D) HWY_IF_UNSIGNED(TFromD<D>)
+#define HWY_IF_SIGNED_D(D) HWY_IF_SIGNED(TFromD<D>)
+#define HWY_IF_FLOAT_D(D) HWY_IF_FLOAT(TFromD<D>)
+#define HWY_IF_NOT_FLOAT_D(D) HWY_IF_NOT_FLOAT(TFromD<D>)
+
+#define HWY_IF_LANE_SIZE_D(D, bytes) HWY_IF_LANE_SIZE(TFromD<D>, bytes)
+#define HWY_IF_NOT_LANE_SIZE_D(D, bytes) HWY_IF_NOT_LANE_SIZE(TFromD<D>, bytes)
 
 // Empty struct used as a size tag type.
 template <size_t N>
 struct SizeTag {};
 
 //------------------------------------------------------------------------------
-// Conversion between types of the same size
+// Same size types, half-width, double-width
 
-// Unsigned/signed/floating-point types whose sizes are kSize bytes.
-template <size_t kSize>
-struct TypesOfSize;
+template <typename T>
+struct TypeTraits;
 template <>
-struct TypesOfSize<1> {
+struct TypeTraits<uint8_t> {
   using Unsigned = uint8_t;
   using Signed = int8_t;
+  using Wide = uint16_t;
 };
 template <>
-struct TypesOfSize<2> {
+struct TypeTraits<int8_t> {
+  using Unsigned = uint8_t;
+  using Signed = int8_t;
+  using Wide = int16_t;
+};
+template <>
+struct TypeTraits<uint16_t> {
   using Unsigned = uint16_t;
   using Signed = int16_t;
+  using Wide = uint32_t;
+  using Narrow = uint8_t;
 };
 template <>
-struct TypesOfSize<4> {
+struct TypeTraits<int16_t> {
+  using Unsigned = uint16_t;
+  using Signed = int16_t;
+  using Wide = int32_t;
+  using Narrow = int8_t;
+};
+template <>
+struct TypeTraits<uint32_t> {
   using Unsigned = uint32_t;
   using Signed = int32_t;
   using Float = float;
+  using Wide = uint64_t;
+  using Narrow = uint16_t;
 };
 template <>
-struct TypesOfSize<8> {
+struct TypeTraits<int32_t> {
+  using Unsigned = uint32_t;
+  using Signed = int32_t;
+  using Float = float;
+  using Wide = int64_t;
+  using Narrow = int16_t;
+};
+template <>
+struct TypeTraits<uint64_t> {
   using Unsigned = uint64_t;
   using Signed = int64_t;
   using Float = double;
+  using Narrow = uint32_t;
+};
+template <>
+struct TypeTraits<int64_t> {
+  using Unsigned = uint64_t;
+  using Signed = int64_t;
+  using Float = double;
+  using Narrow = int32_t;
+};
+template <>
+struct TypeTraits<float> {
+  using Unsigned = uint32_t;
+  using Signed = int32_t;
+  using Float = float;
+  using Wide = double;
+};
+template <>
+struct TypeTraits<double> {
+  using Unsigned = uint64_t;
+  using Signed = int64_t;
+  using Float = double;
+  using Narrow = float;
 };
 
 template <typename T>
-using MakeUnsigned = typename TypesOfSize<sizeof(T)>::Unsigned;
+using MakeUnsigned = typename TypeTraits<T>::Unsigned;
 template <typename T>
-using MakeSigned = typename TypesOfSize<sizeof(T)>::Signed;
+using MakeSigned = typename TypeTraits<T>::Signed;
 template <typename T>
-using MakeFloat = typename TypesOfSize<sizeof(T)>::Float;
+using MakeFloat = typename TypeTraits<T>::Float;
+
+template <typename T>
+using MakeWide = typename TypeTraits<T>::Wide;
+template <typename T>
+using MakeNarrow = typename TypeTraits<T>::Narrow;
 
 }  // namespace hwy
 
@@ -114,17 +181,13 @@ namespace hwy {
 namespace HWY_NAMESPACE {
 
 // SIMD operations are implemented as overloaded functions selected using a
-// "descriptor" D := Simd<T, N>. T is the lane type, N the requested number of
-// lanes >= 1 (always a power of two). In the common case, users do not choose N
-// directly, but instead use HWY_FULL (the largest available size). N may differ
-// from the hardware vector size. If N is less, only that many lanes will be
-// loaded/stored.
+// "descriptor" D := Simd<T, N>. T is the lane type, N a number of lanes >= 1
+// (always a power of two). Users generally do not choose N directly, but
+// instead use HWY_FULL(T[, LMUL]) (the largest available size). N is not
+// necessarily the actual number of lanes, which is returned by Lanes(D()).
 //
 // Only HWY_FULL(T) and N <= 16 / sizeof(T) are guaranteed to be available - the
 // latter are useful if >128 bit vectors are unnecessary or undesirable.
-//
-// Users should not use the N of a Simd<> but instead query the actual number of
-// lanes via Lanes().
 template <typename Lane, size_t N>
 struct Simd {
   constexpr Simd() = default;
@@ -134,31 +197,46 @@ struct Simd {
   // Widening/narrowing ops change the number of lanes and/or their type.
   // To initialize such vectors, we need the corresponding descriptor types:
 
-  // PromoteTo/DemoteTo with another lane type, but same number of lanes.
+  // PromoteTo/DemoteTo() with another lane type, but same number of lanes.
   template <typename NewLane>
   using Rebind = Simd<NewLane, N>;
 
-  // MulEven with another lane type, but same total size.
+  // MulEven() with another lane type, but same total size.
   // Round up to correctly handle scalars with N=1.
   template <typename NewLane>
   using Repartition =
       Simd<NewLane, (N * sizeof(Lane) + sizeof(NewLane) - 1) / sizeof(NewLane)>;
 
-  // LowerHalf with the same lane type, but half the lanes.
+  // LowerHalf() with the same lane type, but half the lanes.
   // Round up to correctly handle scalars with N=1.
   using Half = Simd<T, (N + 1) / 2>;
 
-  // Combine with the same lane type, but twice the lanes.
+  // Combine() with the same lane type, but twice the lanes.
   using Twice = Simd<T, 2 * N>;
 };
+
+template <class D>
+using TFromD = typename D::T;
 
 // Descriptor for the same number of lanes as D, but with the LaneType T.
 template <class T, class D>
 using Rebind = typename D::template Rebind<T>;
 
+template <class D>
+using RebindToSigned = Rebind<MakeSigned<typename D::T>, D>;
+template <class D>
+using RebindToUnsigned = Rebind<MakeUnsigned<typename D::T>, D>;
+template <class D>
+using RebindToFloat = Rebind<MakeFloat<typename D::T>, D>;
+
 // Descriptor for the same total size as D, but with the LaneType T.
 template <class T, class D>
 using Repartition = typename D::template Repartition<T>;
+
+template <class D>
+using RepartitionToWide = Repartition<MakeWide<typename D::T>, D>;
+template <class D>
+using RepartitionToNarrow = Repartition<MakeNarrow<typename D::T>, D>;
 
 // Descriptor for the same lane type as D, but half the lanes.
 template <class D>
@@ -177,6 +255,9 @@ HWY_INLINE HWY_MAYBE_UNUSED constexpr size_t MaxLanes(Simd<T, N>) {
   return N;
 }
 
+// Targets with non-constexpr Lanes define this themselves.
+#if HWY_TARGET != HWY_RVV
+
 // (Potentially) non-constant actual size of the vector at runtime, subject to
 // the limit imposed by the Simd. Useful for advancing loop counters.
 template <typename T, size_t N>
@@ -184,40 +265,7 @@ HWY_INLINE HWY_MAYBE_UNUSED size_t Lanes(Simd<T, N>) {
   return N;
 }
 
-// The source/destination must not overlap/alias.
-template <size_t kBytes, typename From, typename To>
-HWY_API void CopyBytes(const From* from, To* to) {
-#if HWY_COMPILER_MSVC
-  const uint8_t* HWY_RESTRICT from_bytes =
-      reinterpret_cast<const uint8_t*>(from);
-  uint8_t* HWY_RESTRICT to_bytes = reinterpret_cast<uint8_t*>(to);
-  for (size_t i = 0; i < kBytes; ++i) {
-    to_bytes[i] = from_bytes[i];
-  }
-#else
-  // Avoids horrible codegen on Clang (series of PINSRB)
-  __builtin_memcpy(to, from, kBytes);
 #endif
-}
-
-HWY_API size_t PopCount(uint64_t x) {
-#if HWY_COMPILER_CLANG || HWY_COMPILER_GCC
-  return static_cast<size_t>(__builtin_popcountll(x));
-#elif HWY_COMPILER_MSVC && _WIN64
-  return _mm_popcnt_u64(x);
-#elif HWY_COMPILER_MSVC
-  return _mm_popcnt_u32(uint32_t(x)) + _mm_popcnt_u32(uint32_t(x>>32));
-#else
-  x -=  ((x >> 1) & 0x55555555U);
-  x  = (((x >> 2) & 0x33333333U) + (x & 0x33333333U));
-  x  = (((x >> 4) + x) & 0x0F0F0F0FU);
-  x +=   (x >> 8);
-  x +=   (x >> 16);
-  x +=   (x >> 32);
-  x  = x & 0x0000007FU;
-  return (unsigned int)x;
-#endif
-}
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE

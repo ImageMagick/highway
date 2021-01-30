@@ -14,6 +14,9 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+
+#include <cmath>
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "tests/convert_test.cc"
@@ -33,9 +36,9 @@ struct TestBitCast {
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
     const Repartition<ToT, D> dto;
+    HWY_ASSERT_EQ(Lanes(d) * sizeof(T), Lanes(dto) * sizeof(ToT));
     const auto vf = Iota(d, 1);
     const auto vt = BitCast(dto, vf);
-    static_assert(sizeof(vf) == sizeof(vt), "Cast must return same size");
     // Must return the same bits
     auto from_lanes = AllocateAligned<T>(Lanes(d));
     auto to_lanes = AllocateAligned<ToT>(Lanes(dto));
@@ -137,25 +140,24 @@ template <typename ToT>
 struct TestPromoteTo {
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D from_d) {
-    // Avoid "Do not know how to split the result of this operator"
-#if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
+    static_assert(sizeof(T) < sizeof(ToT), "Input type must be narrower");
     const Rebind<ToT, D> to_d;
 
-    const auto from_p1 = Iota(from_d, 1);
-    const auto from_n1 = Set(from_d, T(-1));
-    const auto from_min = Set(from_d, LimitsMin<T>());
-    const auto from_max = Set(from_d, LimitsMax<T>());
-    const auto to_p1 = Iota(to_d, ToT(1));
-    const auto to_n1 = Set(to_d, ToT(T(-1)));
-    const auto to_min = Set(to_d, ToT(LimitsMin<T>()));
-    const auto to_max = Set(to_d, ToT(LimitsMax<T>()));
-    HWY_ASSERT_VEC_EQ(to_d, to_p1, PromoteTo(to_d, from_p1));
-    HWY_ASSERT_VEC_EQ(to_d, to_n1, PromoteTo(to_d, from_n1));
-    HWY_ASSERT_VEC_EQ(to_d, to_min, PromoteTo(to_d, from_min));
-    HWY_ASSERT_VEC_EQ(to_d, to_max, PromoteTo(to_d, from_max));
-#else  // HWY_DISABLE_BROKEN_AVX3_TESTS
-    (void)from_d;
-#endif
+    const size_t N = Lanes(from_d);
+    auto from = AllocateAligned<T>(N);
+    auto expected = AllocateAligned<ToT>(N);
+
+    RandomState rng;
+    for (size_t rep = 0; rep < 200; ++rep) {
+      for (size_t i = 0; i < N; ++i) {
+        const uint64_t bits = rng();
+        memcpy(&from[i], &bits, sizeof(T));
+        expected[i] = from[i];
+      }
+
+      HWY_ASSERT_VEC_EQ(to_d, expected.get(),
+                        PromoteTo(to_d, Load(from_d, from.get())));
+    }
   }
 };
 
@@ -181,6 +183,8 @@ HWY_NOINLINE void TestAllPromoteTo() {
   to_i32div4(uint8_t());
   to_i32div4(int8_t());
 
+  // Must test f16 separately because we can only load/store/convert them.
+
 #if HWY_CAP_INTEGER64
   const ForPartialVectors<TestPromoteTo<uint64_t>, 2> to_u64div2;
   to_u64div2(uint32_t());
@@ -196,52 +200,67 @@ HWY_NOINLINE void TestAllPromoteTo() {
 #endif
 }
 
+template <typename T, HWY_IF_FLOAT(T)>
+bool IsFinite(T t) {
+  return std::isfinite(t);
+}
+// Wrapper avoids calling std::isfinite for integer types (ambiguous).
+template <typename T, HWY_IF_NOT_FLOAT(T)>
+bool IsFinite(T /*unused*/) {
+  return true;
+}
+
 template <typename ToT>
 struct TestDemoteTo {
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D from_d) {
-    // Avoid "Do not know how to split the result of this operator"
-#if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
+    static_assert(sizeof(T) > sizeof(ToT), "Input type must be wider");
     const Rebind<ToT, D> to_d;
 
-    const auto from = Iota(from_d, 1);
-    const auto from_n1 = Set(from_d, T(ToT(-1)));
-    const auto from_min = Set(from_d, T(LimitsMin<ToT>()));
-    const auto from_max = Set(from_d, T(LimitsMax<ToT>()));
-    const auto to = Iota(to_d, ToT(1));
-    const auto to_n1 = Set(to_d, ToT(-1));
-    const auto to_min = Set(to_d, LimitsMin<ToT>());
-    const auto to_max = Set(to_d, LimitsMax<ToT>());
-    HWY_ASSERT_VEC_EQ(to_d, to, DemoteTo(to_d, from));
-    HWY_ASSERT_VEC_EQ(to_d, to_n1, DemoteTo(to_d, from_n1));
-    HWY_ASSERT_VEC_EQ(to_d, to_min, DemoteTo(to_d, from_min));
-    HWY_ASSERT_VEC_EQ(to_d, to_max, DemoteTo(to_d, from_max));
-#else  // HWY_DISABLE_BROKEN_AVX3_TESTS
-    (void)from_d;
-#endif
+    const size_t N = Lanes(from_d);
+    auto from = AllocateAligned<T>(N);
+    auto expected = AllocateAligned<ToT>(N);
+
+    // Narrower range in the wider type, for clamping before we cast
+    const T min = LimitsMin<ToT>();
+    const T max = LimitsMax<ToT>();
+
+    RandomState rng;
+    for (size_t rep = 0; rep < 1000; ++rep) {
+      for (size_t i = 0; i < N; ++i) {
+        do {
+          const uint64_t bits = rng();
+          memcpy(&from[i], &bits, sizeof(T));
+        } while (!IsFinite(from[i]));
+        expected[i] = static_cast<ToT>(std::min(std::max(min, from[i]), max));
+      }
+
+      HWY_ASSERT_VEC_EQ(to_d, expected.get(),
+                        DemoteTo(to_d, Load(from_d, from.get())));
+    }
   }
 };
 
 HWY_NOINLINE void TestAllDemoteTo() {
-  const ForPartialVectors<TestDemoteTo<uint8_t>> to_u8;
-  to_u8(int16_t());
-  to_u8(int32_t());
+  ForDemoteVectors<TestDemoteTo<uint8_t>, 2>()(int16_t());
+  ForDemoteVectors<TestDemoteTo<uint8_t>, 4>()(int32_t());
 
-  const ForPartialVectors<TestDemoteTo<int8_t>> to_i8;
-  to_i8(int16_t());
-  to_i8(int32_t());
+  ForDemoteVectors<TestDemoteTo<int8_t>, 2>()(int16_t());
+  ForDemoteVectors<TestDemoteTo<int8_t>, 4>()(int32_t());
 
-  const ForPartialVectors<TestDemoteTo<int16_t>> to_i16;
-  to_i16(int32_t());
-
-  const ForPartialVectors<TestDemoteTo<uint16_t>> to_u16;
+  const ForDemoteVectors<TestDemoteTo<uint16_t>, 2> to_u16;
   to_u16(int32_t());
 
+  const ForDemoteVectors<TestDemoteTo<int16_t>, 2> to_i16;
+  to_i16(int32_t());
+
+  // Must test f16 separately because we can only load/store/convert them.
+
 #if HWY_CAP_FLOAT64
-  const ForPartialVectors<TestDemoteTo<float>> to_float;
+  const ForDemoteVectors<TestDemoteTo<float>, 2> to_float;
   to_float(double());
 
-  const ForPartialVectors<TestDemoteTo<int32_t>> to_i32;
+  const ForDemoteVectors<TestDemoteTo<int32_t>, 2> to_i32;
   to_i32(double());
 #endif
 }
@@ -249,151 +268,196 @@ HWY_NOINLINE void TestAllDemoteTo() {
 struct TestConvertU8 {
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, const D du32) {
-    // Avoid "Do not know how to split the result of this operator"
-#if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-    const Repartition<uint8_t, D> du8;
+    const Rebind<uint8_t, D> du8;
     auto lanes8 = AllocateAligned<uint8_t>(Lanes(du8));
     Store(Iota(du8, 0), du8, lanes8.get());
-    HWY_ASSERT_VEC_EQ(du32, Iota(du32, 0),
-                      U32FromU8(LoadDup128(du8, lanes8.get())));
-    Store(Iota(du8, 0x7F), du8, lanes8.get());
-    HWY_ASSERT_VEC_EQ(du32, Iota(du32, 0x7F),
-                      U32FromU8(LoadDup128(du8, lanes8.get())));
-    const Rebind<uint8_t, D> p8;
-    HWY_ASSERT_VEC_EQ(p8, Iota(p8, 0), U8FromU32(Iota(du32, 0)));
-    HWY_ASSERT_VEC_EQ(p8, Iota(p8, 0x7F), U8FromU32(Iota(du32, 0x7F)));
-
-#else  // HWY_DISABLE_BROKEN_AVX3_TESTS
-    (void)du32;
-#endif
+    HWY_ASSERT_VEC_EQ(du8, Iota(du8, 0), U8FromU32(Iota(du32, 0)));
+    HWY_ASSERT_VEC_EQ(du8, Iota(du8, 0x7F), U8FromU32(Iota(du32, 0x7F)));
   }
 };
 
 HWY_NOINLINE void TestAllConvertU8() {
-  ForGE128Vectors<TestConvertU8>()(uint32_t());
+  ForDemoteVectors<TestConvertU8, 4>()(uint32_t());
 }
 
-struct TestIntFromFloat {
-  template <typename T, class DF>
-  HWY_NOINLINE void operator()(T /*unused*/, const DF df) {
-    // Avoid "Do not know how to split the result of this operator"
-#if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-    using TI = MakeSigned<T>;
+// Separate function to attempt to work around a compiler bug on ARM: when this
+// is merged with TestIntFromFloat, outputs match a previous Iota(-(N+1)) input.
+struct TestIntFromFloatHuge {
+  template <typename TF, class DF>
+  HWY_NOINLINE void operator()(TF /*unused*/, const DF df) {
+    // Still does not work, although ARMv7 manual says that float->int
+    // saturates, i.e. chooses the nearest representable value.
+#if HWY_TARGET != HWY_NEON
+    using TI = MakeSigned<TF>;
     const Rebind<TI, DF> di;
-    // Integer positive
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(4)), ConvertTo(di, Iota(df, T(4.0))));
 
-    // Integer negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(-32)), ConvertTo(di, Iota(df, T(-32.0))));
+    // Huge positive
+    HWY_ASSERT_VEC_EQ(di, Set(di, LimitsMax<TI>()),
+                      ConvertTo(di, Set(df, TF(1E20))));
 
-    // Above positive
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(2)), ConvertTo(di, Iota(df, T(2.001))));
-
-    // Below positive
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(3)), ConvertTo(di, Iota(df, T(3.9999))));
-
-    // Above negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(-23)),
-                      ConvertTo(di, Iota(df, T(-23.9999))));
-
-    // Below negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(-24)),
-                      ConvertTo(di, Iota(df, T(-24.001))));
-#else  // HWY_DISABLE_BROKEN_AVX3_TESTS
-    (void)df;
+    // Huge negative
+    HWY_ASSERT_VEC_EQ(di, Set(di, LimitsMin<TI>()),
+                      ConvertTo(di, Set(df, TF(-1E20))));
 #endif
   }
 };
+
+struct TestIntFromFloat {
+  template <typename TF, class DF>
+  HWY_NOINLINE void operator()(TF /*unused*/, const DF df) {
+    using TI = MakeSigned<TF>;
+    const Rebind<TI, DF> di;
+    const size_t N = Lanes(df);
+
+    // Integer positive
+    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(4)), ConvertTo(di, Iota(df, TF(4.0))));
+
+    // Integer negative
+    HWY_ASSERT_VEC_EQ(di, Iota(di, -TI(N)), ConvertTo(di, Iota(df, -TF(N))));
+
+    // Above positive
+    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(2)), ConvertTo(di, Iota(df, TF(2.001))));
+
+    // Below positive
+    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(3)), ConvertTo(di, Iota(df, TF(3.9999))));
+
+    const TF eps = static_cast<TF>(0.0001);
+    // Above negative
+    HWY_ASSERT_VEC_EQ(di, Iota(di, -TI(N)),
+                      ConvertTo(di, Iota(df, -TF(N + 1) + eps)));
+
+    // Below negative
+    HWY_ASSERT_VEC_EQ(di, Iota(di, -TI(N + 1)),
+                      ConvertTo(di, Iota(df, -TF(N + 1) - eps)));
+
+    // TF does not have enough precision to represent TI.
+    const double min = static_cast<double>(LimitsMin<TI>());
+    const double max = static_cast<double>(LimitsMax<TI>());
+
+    // Also check random values.
+    auto from = AllocateAligned<TF>(N);
+    auto expected = AllocateAligned<TI>(N);
+    RandomState rng;
+    for (size_t rep = 0; rep < 1000; ++rep) {
+      for (size_t i = 0; i < N; ++i) {
+        do {
+          const uint64_t bits = rng();
+          memcpy(&from[i], &bits, sizeof(TF));
+        } while (!std::isfinite(from[i]));
+        if (from[i] >= max) {
+          expected[i] = LimitsMax<TI>();
+        } else if (from[i] <= min) {
+          expected[i] = LimitsMin<TI>();
+        } else {
+          expected[i] = static_cast<TI>(from[i]);
+        }
+      }
+
+      HWY_ASSERT_VEC_EQ(di, expected.get(),
+                        ConvertTo(di, Load(df, from.get())));
+    }
+  }
+};
+
+HWY_NOINLINE void TestAllIntFromFloat() {
+  ForFloatTypes(ForPartialVectors<TestIntFromFloatHuge>());
+  ForFloatTypes(ForPartialVectors<TestIntFromFloat>());
+}
 
 struct TestFloatFromInt {
-  template <typename T, class DI>
-  HWY_NOINLINE void operator()(T /*unused*/, const DI di) {
-    // Avoid "Do not know how to split the result of this operator"
-#if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-    using TF = MakeFloat<T>;
+  template <typename TI, class DI>
+  HWY_NOINLINE void operator()(TI /*unused*/, const DI di) {
+    using TF = MakeFloat<TI>;
     const Rebind<TF, DI> df;
+    const size_t N = Lanes(df);
 
     // Integer positive
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(4.0)), ConvertTo(df, Iota(di, T(4))));
+    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(4.0)), ConvertTo(df, Iota(di, TI(4))));
 
     // Integer negative
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(-32.0)), ConvertTo(df, Iota(di, T(-32))));
+    HWY_ASSERT_VEC_EQ(df, Iota(df, -TF(N)), ConvertTo(df, Iota(di, -TI(N))));
 
-    // Above positive
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(2.0)), ConvertTo(df, Iota(di, T(2))));
+    // Max positive
+    HWY_ASSERT_VEC_EQ(df, Set(df, TF(LimitsMax<TI>())),
+                      ConvertTo(df, Set(di, LimitsMax<TI>())));
 
-    // Below positive
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(4.0)), ConvertTo(df, Iota(di, T(4))));
-
-    // Above negative
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(-4.0)), ConvertTo(df, Iota(di, T(-4))));
-
-    // Below negative
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(-2.0)), ConvertTo(df, Iota(di, T(-2))));
-#else  // HWY_DISABLE_BROKEN_AVX3_TESTS
-    (void)di;
-#endif
+    // Min negative
+    HWY_ASSERT_VEC_EQ(df, Set(df, TF(LimitsMin<TI>())),
+                      ConvertTo(df, Set(di, LimitsMin<TI>())));
   }
 };
 
-struct TestI32F64 {
-  template <typename T, class DF>
-  HWY_NOINLINE void operator()(T /*unused*/, const DF df) {
-    // Avoid "Do not know how to split the result of this operator"
-#if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-    using TI = int32_t;
-    using TF = double;
-    const Rebind<TI, DF> di;
-    // Integer positive
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(4)), DemoteTo(di, Iota(df, T(4.0))));
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(4.0)), PromoteTo(df, Iota(di, T(4))));
-
-    // Integer negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(-32)), DemoteTo(di, Iota(df, T(-32.0))));
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(-32.0)), PromoteTo(df, Iota(di, T(-32))));
-
-    // Above positive
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(2)), DemoteTo(di, Iota(df, T(2.001))));
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(2.0)), PromoteTo(df, Iota(di, T(2))));
-
-    // Below positive
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(3)), DemoteTo(di, Iota(df, T(3.9999))));
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(4.0)), PromoteTo(df, Iota(di, T(4))));
-
-    // Above negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(-23)),
-                      DemoteTo(di, Iota(df, T(-23.9999))));
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(-4.0)), PromoteTo(df, Iota(di, T(-4))));
-
-    // Below negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(-24)),
-                      DemoteTo(di, Iota(df, T(-24.001))));
-    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(-2.0)), PromoteTo(df, Iota(di, T(-2))));
-#else  // HWY_DISABLE_BROKEN_AVX3_TESTS
-    (void)df;
-#endif
-  }
-};
-
-HWY_NOINLINE void TestAllConvertFloatInt() {
-  ForFloatTypes(ForPartialVectors<TestIntFromFloat>());
-
+HWY_NOINLINE void TestAllFloatFromInt() {
   ForPartialVectors<TestFloatFromInt>()(int32_t());
 #if HWY_CAP_FLOAT64 && HWY_CAP_INTEGER64
   ForPartialVectors<TestFloatFromInt>()(int64_t());
 #endif
+}
 
+struct TestI32F64 {
+  template <typename TF, class DF>
+  HWY_NOINLINE void operator()(TF /*unused*/, const DF df) {
+    using TI = int32_t;
+    const Rebind<TI, DF> di;
+    const size_t N = Lanes(df);
+
+    // Integer positive
+    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(4)), DemoteTo(di, Iota(df, TF(4.0))));
+    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(4.0)), PromoteTo(df, Iota(di, TI(4))));
+
+    // Integer negative
+    HWY_ASSERT_VEC_EQ(di, Iota(di, -TI(N)), DemoteTo(di, Iota(df, -TF(N))));
+    HWY_ASSERT_VEC_EQ(df, Iota(df, -TF(N)), PromoteTo(df, Iota(di, -TI(N))));
+
+    // Above positive
+    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(2)), DemoteTo(di, Iota(df, TF(2.001))));
+    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(2.0)), PromoteTo(df, Iota(di, TI(2))));
+
+    // Below positive
+    HWY_ASSERT_VEC_EQ(di, Iota(di, TI(3)), DemoteTo(di, Iota(df, TF(3.9999))));
+    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(4.0)), PromoteTo(df, Iota(di, TI(4))));
+
+    const TF eps = static_cast<TF>(0.0001);
+    // Above negative
+    HWY_ASSERT_VEC_EQ(di, Iota(di, -TI(N)),
+                      DemoteTo(di, Iota(df, -TF(N + 1) + eps)));
+    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(-4.0)), PromoteTo(df, Iota(di, TI(-4))));
+
+    // Below negative
+    HWY_ASSERT_VEC_EQ(di, Iota(di, -TI(N + 1)),
+                      DemoteTo(di, Iota(df, -TF(N + 1) - eps)));
+    HWY_ASSERT_VEC_EQ(df, Iota(df, TF(-2.0)), PromoteTo(df, Iota(di, TI(-2))));
+
+    // Huge positive float
+    HWY_ASSERT_VEC_EQ(di, Set(di, LimitsMax<TI>()),
+                      DemoteTo(di, Set(df, TF(1E12))));
+
+    // Huge negative float
+    HWY_ASSERT_VEC_EQ(di, Set(di, LimitsMin<TI>()),
+                      DemoteTo(di, Set(df, TF(-1E12))));
+
+    // Max positive int
+    HWY_ASSERT_VEC_EQ(df, Set(df, TF(LimitsMax<TI>())),
+                      PromoteTo(df, Set(di, LimitsMax<TI>())));
+
+    // Min negative int
+    HWY_ASSERT_VEC_EQ(df, Set(df, TF(LimitsMin<TI>())),
+                      PromoteTo(df, Set(di, LimitsMin<TI>())));
+  }
+};
+
+HWY_NOINLINE void TestAllI32F64() {
 #if HWY_CAP_FLOAT64
-  ForPartialVectors<TestI32F64>()(double());
+  ForDemoteVectors<TestI32F64, 2>()(double());
 #endif
 }
 
 struct TestNearestInt {
-  template <typename T, class D>
-  HWY_NOINLINE void operator()(T /*unused*/, const D di) {
-    // Avoid "Do not know how to split the result of this operator"
-#if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-    const Rebind<float, D> df;
+  template <typename TI, class DI>
+  HWY_NOINLINE void operator()(TI /*unused*/, const DI di) {
+    using TF = MakeFloat<TI>;
+    const Rebind<TF, DI> df;
+    const size_t N = Lanes(df);
 
     // Integer positive
     HWY_ASSERT_VEC_EQ(di, Iota(di, 4), NearestInt(Iota(df, 4.0f)));
@@ -407,14 +471,12 @@ struct TestNearestInt {
     // Below positive
     HWY_ASSERT_VEC_EQ(di, Iota(di, 4), NearestInt(Iota(df, 3.9999f)));
 
+    const TF eps = static_cast<TF>(0.0001);
     // Above negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, -24), NearestInt(Iota(df, -23.9999f)));
+    HWY_ASSERT_VEC_EQ(di, Iota(di, -TI(N)), NearestInt(Iota(df, -TF(N) + eps)));
 
     // Below negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, -24), NearestInt(Iota(df, -24.001f)));
-#else  // HWY_DISABLE_BROKEN_AVX3_TESTS
-    (void)di;
-#endif
+    HWY_ASSERT_VEC_EQ(di, Iota(di, -TI(N)), NearestInt(Iota(df, -TF(N) - eps)));
   }
 };
 
@@ -428,18 +490,14 @@ HWY_NOINLINE void TestAllNearestInt() {
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-namespace hwy {
-
-class HwyConvertTest : public hwy::TestWithParamTarget {};
-
-HWY_TARGET_INSTANTIATE_TEST_SUITE_P(HwyConvertTest);
-
+HWY_BEFORE_TEST(HwyConvertTest);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllBitCast);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllPromoteTo);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllDemoteTo);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllConvertU8);
-HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllConvertFloatInt);
+HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllIntFromFloat);
+HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllFloatFromInt);
+HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllI32F64);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllNearestInt);
-
-}  // namespace hwy
+HWY_AFTER_TEST();
 #endif

@@ -17,8 +17,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>  // memcpy
 
+#include <algorithm>  // std::min
 #include <cmath>
 
 #include "hwy/ops/shared-inl.h"
@@ -102,8 +102,8 @@ HWY_INLINE Vec1<T> Set(Sisd<T> /* tag */, const T2 t) {
 }
 
 template <typename T>
-HWY_INLINE Vec1<T> Undefined(Sisd<T> /* tag */) {
-  return Vec1<T>(0);
+HWY_INLINE Vec1<T> Undefined(Sisd<T> d) {
+  return Zero(d);
 }
 
 template <typename T, typename T2>
@@ -111,107 +111,63 @@ Vec1<T> Iota(const Sisd<T> /* tag */, const T2 first) {
   return Vec1<T>(static_cast<T>(first));
 }
 
-// ================================================== SHIFTS
-
-// ------------------------------ Shift lanes by constant #bits
-
-template <int kBits, typename T>
-HWY_INLINE Vec1<T> ShiftLeft(const Vec1<T> v) {
-  static_assert(0 <= kBits && kBits < sizeof(T) * 8, "Invalid shift");
-  return Vec1<T>(static_cast<hwy::MakeUnsigned<T>>(v.raw) << kBits);
-}
-
-template <int kBits, typename T>
-HWY_INLINE Vec1<T> ShiftRight(const Vec1<T> v) {
-  static_assert(0 <= kBits && kBits < sizeof(T) * 8, "Invalid shift");
-  return Vec1<T>(v.raw >> kBits);
-}
-
-// ------------------------------ Shift lanes by independent variable #bits
-
-// Single-lane => same as above except for the argument type.
-template <typename T>
-HWY_INLINE Vec1<T> operator<<(const Vec1<T> v, const Vec1<T> bits) {
-  return Vec1<T>(static_cast<hwy::MakeUnsigned<T>>(v.raw) << bits.raw);
-}
-template <typename T>
-HWY_INLINE Vec1<T> operator>>(const Vec1<T> v, const Vec1<T> bits) {
-  return Vec1<T>(v.raw >> bits.raw);
-}
-
 // ================================================== LOGICAL
 
-template <typename Bits>
-struct BitwiseOp {
-  template <typename T, class Op>
-  Vec1<T> operator()(const Vec1<T> a, const Vec1<T> b, const Op& op) const {
-    static_assert(sizeof(T) == sizeof(Bits), "Float/int size mismatch");
-    Bits ia, ib;
-    CopyBytes<sizeof(Bits)>(&a, &ia);
-    CopyBytes<sizeof(Bits)>(&b, &ib);
-    ia = op(ia, ib);
-    T ret;
-    CopyBytes<sizeof(Bits)>(&ia, &ret);
-    return Vec1<T>(ret);
-  }
-};
+// ------------------------------ Not
 
-// ------------------------------ Bitwise AND
+template <typename T>
+HWY_INLINE Vec1<T> Not(const Vec1<T> v) {
+  using TU = MakeUnsigned<T>;
+  const Sisd<TU> du;
+  return BitCast(Sisd<T>(), Vec1<TU>(~BitCast(du, v).raw));
+}
 
+// ------------------------------ And
+
+template <typename T>
+HWY_INLINE Vec1<T> And(const Vec1<T> a, const Vec1<T> b) {
+  using TU = MakeUnsigned<T>;
+  const Sisd<TU> du;
+  return BitCast(Sisd<T>(), Vec1<TU>(BitCast(du, a).raw & BitCast(du, b).raw));
+}
 template <typename T>
 HWY_INLINE Vec1<T> operator&(const Vec1<T> a, const Vec1<T> b) {
-  return Vec1<T>(a.raw & b.raw);
+  return And(a, b);
 }
 
-HWY_INLINE Vec1<float> And(const Vec1<float> a, const Vec1<float> b) {
-  return BitwiseOp<int32_t>()(a, b, [](int32_t i, int32_t j) { return i & j; });
-}
-HWY_INLINE Vec1<double> And(const Vec1<double> a, const Vec1<double> b) {
-  return BitwiseOp<int64_t>()(a, b, [](int64_t i, int64_t j) { return i & j; });
-}
+// ------------------------------ AndNot
 
-// ------------------------------ Bitwise AND-NOT
-
-// Returns ~a & b.
 template <typename T>
 HWY_INLINE Vec1<T> AndNot(const Vec1<T> a, const Vec1<T> b) {
-  return Vec1<T>(~a.raw & b.raw);
-}
-HWY_INLINE Vec1<float> AndNot(const Vec1<float> a, const Vec1<float> b) {
-  return BitwiseOp<int32_t>()(a, b,
-                              [](int32_t i, int32_t j) { return ~i & j; });
-}
-HWY_INLINE Vec1<double> AndNot(const Vec1<double> a, const Vec1<double> b) {
-  return BitwiseOp<int64_t>()(a, b,
-                              [](int64_t i, int64_t j) { return ~i & j; });
+  using TU = MakeUnsigned<T>;
+  const Sisd<TU> du;
+  return BitCast(Sisd<T>(), Vec1<TU>(~BitCast(du, a).raw & BitCast(du, b).raw));
 }
 
-// ------------------------------ Bitwise OR
+// ------------------------------ Or
 
+template <typename T>
+HWY_INLINE Vec1<T> Or(const Vec1<T> a, const Vec1<T> b) {
+  using TU = MakeUnsigned<T>;
+  const Sisd<TU> du;
+  return BitCast(Sisd<T>(), Vec1<TU>(BitCast(du, a).raw | BitCast(du, b).raw));
+}
 template <typename T>
 HWY_INLINE Vec1<T> operator|(const Vec1<T> a, const Vec1<T> b) {
-  return Vec1<T>(a.raw | b.raw);
+  return Or(a, b);
 }
 
-HWY_INLINE Vec1<float> Or(const Vec1<float> a, const Vec1<float> b) {
-  return BitwiseOp<int32_t>()(a, b, [](int32_t i, int32_t j) { return i | j; });
-}
-HWY_INLINE Vec1<double> Or(const Vec1<double> a, const Vec1<double> b) {
-  return BitwiseOp<int64_t>()(a, b, [](int64_t i, int64_t j) { return i | j; });
-}
-
-// ------------------------------ Bitwise XOR
+// ------------------------------ Xor
 
 template <typename T>
+HWY_INLINE Vec1<T> Xor(const Vec1<T> a, const Vec1<T> b) {
+  using TU = MakeUnsigned<T>;
+  const Sisd<TU> du;
+  return BitCast(Sisd<T>(), Vec1<TU>(BitCast(du, a).raw ^ BitCast(du, b).raw));
+}
+template <typename T>
 HWY_INLINE Vec1<T> operator^(const Vec1<T> a, const Vec1<T> b) {
-  return Vec1<T>(a.raw ^ b.raw);
-}
-
-HWY_INLINE Vec1<float> Xor(const Vec1<float> a, const Vec1<float> b) {
-  return BitwiseOp<int32_t>()(a, b, [](int32_t i, int32_t j) { return i ^ j; });
-}
-HWY_INLINE Vec1<double> Xor(const Vec1<double> a, const Vec1<double> b) {
-  return BitwiseOp<int64_t>()(a, b, [](int64_t i, int64_t j) { return i ^ j; });
+  return Xor(a, b);
 }
 
 // ------------------------------ CopySign
@@ -229,20 +185,41 @@ HWY_API Vec1<T> CopySignToAbs(const Vec1<T> abs, const Vec1<T> sign) {
   return Or(abs, And(SignBit(Sisd<T>()), sign));
 }
 
+// ------------------------------ BroadcastSignBit
+
+template <typename T>
+HWY_API Vec1<T> BroadcastSignBit(const Vec1<T> v) {
+  // This is used inside ShiftRight, so we cannot implement in terms of it.
+  return v.raw < 0 ? Vec1<T>(T(-1)) : Vec1<T>(0);
+}
+
 // ------------------------------ Mask
+
+template <typename TFrom, typename TTo>
+HWY_API Mask1<TTo> RebindMask(Sisd<TTo> /*tag*/, Mask1<TFrom> m) {
+  static_assert(sizeof(TFrom) == sizeof(TTo), "Must have same size");
+  return Mask1<TTo>(m.raw);
+}
 
 // v must be 0 or FF..FF.
 template <typename T>
 HWY_INLINE Mask1<T> MaskFromVec(const Vec1<T> v) {
   Mask1<T> mask;
-  memcpy(&mask.bits, &v.raw, sizeof(mask.bits));
+  CopyBytes<sizeof(mask.bits)>(&v.raw, &mask.bits);
   return mask;
 }
 
 template <typename T>
 Vec1<T> VecFromMask(const Mask1<T> mask) {
   Vec1<T> v;
-  memcpy(&v.raw, &mask.bits, sizeof(v.raw));
+  CopyBytes<sizeof(v.raw)>(&mask.bits, &v.raw);
+  return v;
+}
+
+template <typename T>
+Vec1<T> VecFromMask(Sisd<T> /* tag */, const Mask1<T> mask) {
+  Vec1<T> v;
+  CopyBytes<sizeof(v.raw)>(&mask.bits, &v.raw);
   return v;
 }
 
@@ -266,6 +243,113 @@ HWY_INLINE Vec1<T> IfThenZeroElse(const Mask1<T> mask, const Vec1<T> no) {
 template <typename T>
 HWY_INLINE Vec1<T> ZeroIfNegative(const Vec1<T> v) {
   return v.raw < 0 ? Vec1<T>(0) : v;
+}
+
+// ------------------------------ Mask logical
+
+template <typename T>
+HWY_API Mask1<T> Not(const Mask1<T> m) {
+  const Sisd<T> d;
+  return MaskFromVec(Not(VecFromMask(d, m)));
+}
+
+template <typename T>
+HWY_API Mask1<T> And(const Mask1<T> a, Mask1<T> b) {
+  const Sisd<T> d;
+  return MaskFromVec(And(VecFromMask(d, a), VecFromMask(d, b)));
+}
+
+template <typename T>
+HWY_API Mask1<T> AndNot(const Mask1<T> a, Mask1<T> b) {
+  const Sisd<T> d;
+  return MaskFromVec(AndNot(VecFromMask(d, a), VecFromMask(d, b)));
+}
+
+template <typename T>
+HWY_API Mask1<T> Or(const Mask1<T> a, Mask1<T> b) {
+  const Sisd<T> d;
+  return MaskFromVec(Or(VecFromMask(d, a), VecFromMask(d, b)));
+}
+
+template <typename T>
+HWY_API Mask1<T> Xor(const Mask1<T> a, Mask1<T> b) {
+  const Sisd<T> d;
+  return MaskFromVec(Xor(VecFromMask(d, a), VecFromMask(d, b)));
+}
+
+// ================================================== SHIFTS
+
+// ------------------------------ ShiftLeft (BroadcastSignBit)
+
+template <int kBits, typename T>
+HWY_INLINE Vec1<T> ShiftLeft(const Vec1<T> v) {
+  static_assert(0 <= kBits && kBits < sizeof(T) * 8, "Invalid shift");
+  return Vec1<T>(static_cast<hwy::MakeUnsigned<T>>(v.raw) << kBits);
+}
+
+template <int kBits, typename T>
+HWY_INLINE Vec1<T> ShiftRight(const Vec1<T> v) {
+  static_assert(0 <= kBits && kBits < sizeof(T) * 8, "Invalid shift");
+#if __cplusplus >= 202002L
+  // Signed right shift is now guaranteed to be arithmetic (rounding toward
+  // negative infinity, i.e. shifting in the sign bit).
+  return Vec1<T>(v.raw >> kBits);
+#else
+  if (IsSigned<T>()) {
+    // Emulate arithmetic shift using only logical (unsigned) shifts, because
+    // signed shifts are still implementation-defined.
+    using TU = hwy::MakeUnsigned<T>;
+    const Sisd<TU> du;
+    const TU shifted = BitCast(du, v).raw >> kBits;
+    const TU sign = BitCast(du, BroadcastSignBit(v)).raw;
+    const TU upper = sign << (sizeof(TU) * 8 - 1 - kBits);
+    return BitCast(Sisd<T>(), Vec1<TU>(shifted | upper));
+  } else {
+    return Vec1<T>(v.raw >> kBits);  // unsigned, logical shift
+  }
+#endif
+}
+
+// ------------------------------ ShiftLeftSame (BroadcastSignBit)
+
+template <typename T>
+HWY_INLINE Vec1<T> ShiftLeftSame(const Vec1<T> v, int bits) {
+  return Vec1<T>(static_cast<hwy::MakeUnsigned<T>>(v.raw) << bits);
+}
+
+template <typename T>
+HWY_INLINE Vec1<T> ShiftRightSame(const Vec1<T> v, int bits) {
+#if __cplusplus >= 202002L
+  // Signed right shift is now guaranteed to be arithmetic (rounding toward
+  // negative infinity, i.e. shifting in the sign bit).
+  return Vec1<T>(v.raw >> bits);
+#else
+  if (IsSigned<T>()) {
+    // Emulate arithmetic shift using only logical (unsigned) shifts, because
+    // signed shifts are still implementation-defined.
+    using TU = hwy::MakeUnsigned<T>;
+    const Sisd<TU> du;
+    const TU shifted = BitCast(du, v).raw >> bits;
+    const TU sign = BitCast(du, BroadcastSignBit(v)).raw;
+    const TU upper = sign << (sizeof(TU) * 8 - 1 - bits);
+    return BitCast(Sisd<T>(), Vec1<TU>(shifted | upper));
+  } else {
+    return Vec1<T>(v.raw >> bits);  // unsigned, logical shift
+  }
+#endif
+}
+
+// ------------------------------ Shl
+
+// Single-lane => same as ShiftLeftSame except for the argument type.
+template <typename T>
+HWY_INLINE Vec1<T> operator<<(const Vec1<T> v, const Vec1<T> bits) {
+  return ShiftLeftSame(v, bits.raw);
+}
+
+template <typename T>
+HWY_INLINE Vec1<T> operator>>(const Vec1<T> v, const Vec1<T> bits) {
+  return ShiftRightSame(v, bits.raw);
 }
 
 // ================================================== ARITHMETIC
@@ -671,7 +755,7 @@ HWY_INLINE void StoreU(const Vec1<T> v, Sisd<T> d, T* HWY_RESTRICT p) {
   return Store(v, d, p);
 }
 
-// ------------------------------ "Non-temporal" stores
+// ------------------------------ Stream
 
 template <typename T>
 HWY_INLINE void Stream(const Vec1<T> v, Sisd<T> d, T* HWY_RESTRICT aligned) {
@@ -703,40 +787,115 @@ HWY_INLINE Vec1<T> GatherIndex(Sisd<T> d, const T* HWY_RESTRICT base,
 template <typename FromT, typename ToT>
 HWY_INLINE Vec1<ToT> PromoteTo(Sisd<ToT> /* tag */, Vec1<FromT> from) {
   static_assert(sizeof(ToT) > sizeof(FromT), "Not promoting");
+  // For bits Y > X, floatX->floatY and intX->intY are always representable.
   return Vec1<ToT>(static_cast<ToT>(from.raw));
 }
 
-template <typename FromT, typename ToT>
+template <typename FromT, typename ToT, HWY_IF_FLOAT(FromT)>
 HWY_INLINE Vec1<ToT> DemoteTo(Sisd<ToT> /* tag */, Vec1<FromT> from) {
   static_assert(sizeof(ToT) < sizeof(FromT), "Not demoting");
-  // Prevent ubsan errors when converting float to integers
-  if (IsFloat<FromT>() && !IsFloat<ToT>()) {
-    const float f = static_cast<float>(from.raw);
-    if (std::isinf(f) || std::fabs(static_cast<double>(from.raw)) >
-                             static_cast<double>(LimitsMax<ToT>())) {
-      return Vec1<ToT>(std::signbit(f) ? LimitsMin<ToT>()
-                                       : LimitsMax<ToT>());
-    }
+
+  // Prevent ubsan errors when converting float to narrower integer/float
+  if (std::isinf(from.raw) ||
+      std::fabs(from.raw) > static_cast<FromT>(LimitsMax<ToT>())) {
+    return Vec1<ToT>(std::signbit(from.raw) ? LimitsMin<ToT>()
+                                            : LimitsMax<ToT>());
   }
   return Vec1<ToT>(static_cast<ToT>(from.raw));
 }
 
-template <typename FromT, typename ToT>
+template <typename FromT, typename ToT, HWY_IF_NOT_FLOAT(FromT)>
+HWY_INLINE Vec1<ToT> DemoteTo(Sisd<ToT> /* tag */, Vec1<FromT> from) {
+  static_assert(sizeof(ToT) < sizeof(FromT), "Not demoting");
+
+  // Int to int: choose closest value in ToT to `from` (avoids UB)
+  from.raw = std::min<FromT>(std::max<FromT>(LimitsMin<ToT>(), from.raw),
+                             LimitsMax<ToT>());
+  return Vec1<ToT>(static_cast<ToT>(from.raw));
+}
+
+static HWY_INLINE Vec1<float> PromoteTo(Sisd<float> /* tag */,
+                                        const Vec1<float16_t> v) {
+  uint16_t bits16;
+  CopyBytes<2>(&v.raw, &bits16);
+  const uint32_t sign = bits16 >> 15;
+  const uint32_t biased_exp = (bits16 >> 10) & 0x1F;
+  const uint32_t mantissa = bits16 & 0x3FF;
+
+  // Subnormal or zero
+  if (biased_exp == 0) {
+    const float subnormal = (1.0f / 16384) * (mantissa * (1.0f / 1024));
+    return Vec1<float>(sign ? -subnormal : subnormal);
+  }
+
+  // Normalized: convert the representation directly (faster than ldexp/tables).
+  const uint32_t biased_exp32 = biased_exp + (127 - 15);
+  const uint32_t mantissa32 = mantissa << (23 - 10);
+  const uint32_t bits32 = (sign << 31) | (biased_exp32 << 23) | mantissa32;
+  float out;
+  CopyBytes<4>(&bits32, &out);
+  return Vec1<float>(out);
+}
+
+static HWY_INLINE Vec1<float16_t> DemoteTo(Sisd<float16_t> /* tag */,
+                                           const Vec1<float> v) {
+  uint32_t bits32;
+  CopyBytes<4>(&v.raw, &bits32);
+  const uint32_t sign = bits32 >> 31;
+  const uint32_t biased_exp32 = (bits32 >> 23) & 0xFF;
+  const uint32_t mantissa32 = bits32 & 0x7FFFFF;
+
+  const int32_t exp = HWY_MIN(static_cast<int32_t>(biased_exp32) - 127, 15);
+
+  // Tiny or zero => zero.
+  Vec1<float16_t> out;
+  if (exp < -24) {
+    bits32 = 0;
+    CopyBytes<2>(&bits32, &out);
+    return out;
+  }
+
+  uint32_t biased_exp16, mantissa16;
+
+  // exp = [-24, -15] => subnormal
+  if (exp < -14) {
+    biased_exp16 = 0;
+    const uint32_t sub_exp = static_cast<uint32_t>(-14 - exp);
+    HWY_DASSERT(1 <= sub_exp && sub_exp < 11);
+    mantissa16 = (1 << (10 - sub_exp)) + (mantissa32 >> (13 + sub_exp));
+  } else {
+    // exp = [-14, 15]
+    biased_exp16 = static_cast<uint32_t>(exp + 15);
+    HWY_DASSERT(1 <= biased_exp16 && biased_exp16 < 31);
+    mantissa16 = mantissa32 >> 13;
+  }
+
+  HWY_DASSERT(mantissa16 < 1024);
+  const uint32_t bits16 = (sign << 15) | (biased_exp16 << 10) | mantissa16;
+  HWY_DASSERT(bits16 < 0x10000);
+  CopyBytes<2>(&bits16, &out);
+  return out;
+}
+
+template <typename FromT, typename ToT, HWY_IF_FLOAT(FromT)>
 HWY_INLINE Vec1<ToT> ConvertTo(Sisd<ToT> /* tag */, Vec1<FromT> from) {
-  // Prevent ubsan errors when converting float to integers
-  if (IsFloat<FromT>() && !IsFloat<ToT>()) {
-    const float f = static_cast<float>(from.raw);
-    if (std::isinf(f) || std::fabs(static_cast<double>(from.raw)) >
-                             static_cast<double>(LimitsMax<ToT>())) {
-      return Vec1<ToT>(std::signbit(f) ? LimitsMin<ToT>()
-                                       : LimitsMax<ToT>());
-    }
+  static_assert(sizeof(ToT) == sizeof(FromT), "Should have same size");
+  // float## -> int##: return closest representable value. We cannot exactly
+  // represent LimitsMax<ToT> in FromT, so use double.
+  const double f = static_cast<double>(from.raw);
+  if (std::isinf(from.raw) ||
+      std::fabs(f) > static_cast<double>(LimitsMax<ToT>())) {
+    return Vec1<ToT>(std::signbit(from.raw) ? LimitsMin<ToT>()
+                                            : LimitsMax<ToT>());
   }
   return Vec1<ToT>(static_cast<ToT>(from.raw));
 }
 
-HWY_INLINE Vec1<uint32_t> U32FromU8(const Vec1<uint8_t> v) {
-  return PromoteTo(Sisd<uint32_t>(), v);
+template <typename FromT, typename ToT, HWY_IF_NOT_FLOAT(FromT)>
+HWY_INLINE Vec1<ToT> ConvertTo(Sisd<ToT> /* tag */, Vec1<FromT> from) {
+  static_assert(sizeof(ToT) == sizeof(FromT), "Should have same size");
+  // int## -> float##: no check needed
+  return Vec1<ToT>(static_cast<ToT>(from.raw));
 }
 
 HWY_INLINE Vec1<uint8_t> U8FromU32(const Vec1<uint32_t> v) {
@@ -746,15 +905,19 @@ HWY_INLINE Vec1<uint8_t> U8FromU32(const Vec1<uint32_t> v) {
 // Approximation of round-to-nearest for numbers representable as int32_t.
 HWY_INLINE Vec1<int32_t> NearestInt(const Vec1<float> v) {
   const float f = v.raw;
+  if (std::isinf(f) ||
+      std::fabs(f) > static_cast<float>(LimitsMax<int32_t>())) {
+    return Vec1<int32_t>(std::signbit(f) ? LimitsMin<int32_t>()
+                                         : LimitsMax<int32_t>());
+  }
   const float bias = f < 0.0f ? -0.5f : 0.5f;
   return Vec1<int32_t>(static_cast<int>(f + bias));
 }
 
 // ================================================== SWIZZLE
 
-// Unsupported: Shift*Bytes, CombineShiftRightBytes, Interleave*,
-// Shuffle*, SumsOfU8x8, UpperHalf - these require more than one lane and/or
-// actual 128-bit vectors.
+// Unsupported: Shift*Bytes, CombineShiftRightBytes, Interleave*, Shuffle*,
+// UpperHalf - these require more than one lane and/or actual 128-bit vectors.
 
 template <typename T>
 HWY_INLINE T GetLane(const Vec1<T> v) {
@@ -771,6 +934,46 @@ HWY_INLINE Vec1<T> LowerHalf(Vec1<T> v) {
 template <int kLane, typename T>
 HWY_INLINE Vec1<T> Broadcast(const Vec1<T> v) {
   static_assert(kLane == 0, "Scalar only has one lane");
+  return v;
+}
+
+// ------------------------------ Shuffle bytes with variable indices
+
+// Returns vector of bytes[from[i]]. "from" is also interpreted as bytes, i.e.
+// indices in [0, sizeof(T)).
+template <typename T>
+HWY_API Vec1<T> TableLookupBytes(const Vec1<T> in, const Vec1<T> from) {
+  uint8_t in_bytes[sizeof(T)];
+  uint8_t from_bytes[sizeof(T)];
+  uint8_t out_bytes[sizeof(T)];
+  CopyBytes<sizeof(T)>(&in, &in_bytes);
+  CopyBytes<sizeof(T)>(&from, &from_bytes);
+  for (size_t i = 0; i < sizeof(T); ++i) {
+    out_bytes[i] = in_bytes[from_bytes[i]];
+  }
+  T out;
+  CopyBytes<sizeof(T)>(&out_bytes, &out);
+  return Vec1<T>{out};
+}
+
+// ------------------------------ TableLookupLanes
+
+// Returned by SetTableIndices for use by TableLookupLanes.
+template <typename T>
+struct Indices1 {
+  int raw;
+};
+
+template <typename T>
+HWY_API Indices1<T> SetTableIndices(Sisd<T>, const int32_t* idx) {
+#if !defined(NDEBUG) || defined(ADDRESS_SANITIZER)
+  HWY_DASSERT(idx[0] == 0);
+#endif
+  return Indices1<T>{idx[0]};
+}
+
+template <typename T>
+HWY_API Vec1<T> TableLookupLanes(const Vec1<T> v, const Indices1<T> /* idx */) {
   return v;
 }
 
@@ -813,13 +1016,28 @@ HWY_INLINE bool AllTrue(const Mask1<T> mask) {
 }
 
 template <typename T>
-HWY_INLINE uint64_t BitsFromMask(const Mask1<T> mask) {
-  return mask.bits & 1;
+HWY_INLINE size_t StoreMaskBits(const Mask1<T> mask, uint8_t* p) {
+  *p = AllTrue(mask);
+  return 1;
 }
-
 template <typename T>
 HWY_INLINE size_t CountTrue(const Mask1<T> mask) {
   return mask.bits == 0 ? 0 : 1;
+}
+
+template <typename T>
+HWY_API Vec1<T> Compress(Vec1<T> v, const Mask1<T> /* mask */) {
+  // Upper lanes are undefined, so result is the same independent of mask.
+  return v;
+}
+
+// ------------------------------ CompressStore
+
+template <typename T>
+HWY_API size_t CompressStore(Vec1<T> v, const Mask1<T> mask, Sisd<T> d,
+                             T* HWY_RESTRICT aligned) {
+  Store(Compress(v, mask), d, aligned);
+  return CountTrue(mask);
 }
 
 // ------------------------------ Reductions
@@ -836,6 +1054,58 @@ HWY_INLINE Vec1<T> MinOfLanes(const Vec1<T> v) {
 template <typename T>
 HWY_INLINE Vec1<T> MaxOfLanes(const Vec1<T> v) {
   return v;
+}
+
+// ================================================== Operator wrapper
+
+template <class V>
+HWY_API V Add(V a, V b) {
+  return a + b;
+}
+template <class V>
+HWY_API V Sub(V a, V b) {
+  return a - b;
+}
+
+template <class V>
+HWY_API V Mul(V a, V b) {
+  return a * b;
+}
+template <class V>
+HWY_API V Div(V a, V b) {
+  return a / b;
+}
+
+template <class V>
+V Shl(V a, V b) {
+  return a << b;
+}
+template <class V>
+V Shr(V a, V b) {
+  return a >> b;
+}
+
+template <class V>
+HWY_API auto Eq(V a, V b) -> decltype(a == b) {
+  return a == b;
+}
+template <class V>
+HWY_API auto Lt(V a, V b) -> decltype(a == b) {
+  return a < b;
+}
+
+template <class V>
+HWY_API auto Gt(V a, V b) -> decltype(a == b) {
+  return a > b;
+}
+template <class V>
+HWY_API auto Ge(V a, V b) -> decltype(a == b) {
+  return a >= b;
+}
+
+template <class V>
+HWY_API auto Le(V a, V b) -> decltype(a == b) {
+  return a <= b;
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

@@ -26,9 +26,6 @@ HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
 
-// Avoid "Do not know how to split the result of this operator"
-#if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-
 template <class DF>
 HWY_NOINLINE void FloorLog2(const DF df, const uint8_t* HWY_RESTRICT values,
                             uint8_t* HWY_RESTRICT log2) {
@@ -49,7 +46,7 @@ struct TestFloorLog2 {
     auto in = AllocateAligned<uint8_t>(N);
     auto expected = AllocateAligned<uint8_t>(N);
 
-    RandomState rng{1234};
+    RandomState rng;
     for (size_t i = 0; i < N; ++i) {
       expected[i] = Random32(&rng) & 7;
       in[i] = static_cast<uint8_t>(1u << expected[i]);
@@ -58,19 +55,15 @@ struct TestFloorLog2 {
     FloorLog2(df, in.get(), out.get());
     int sum = 0;
     for (size_t i = 0; i < N; ++i) {
-      EXPECT_EQ(expected[i], out[i]);
+      HWY_ASSERT_EQ(expected[i], out[i]);
       sum += out[i];
     }
     PreventElision(sum);
   }
 };
 
-#endif  // HWY_DISABLE_BROKEN_AVX3_TESTS
-
 HWY_NOINLINE void TestAllFloorLog2() {
-#if !defined(HWY_DISABLE_BROKEN_AVX3_TESTS) || HWY_TARGET != HWY_AVX3
-  ForPartialVectors<TestFloorLog2>()(float());
-#endif
+  ForDemoteVectors<TestFloorLog2, 4>()(float());
 }
 
 template <class D, typename T>
@@ -91,15 +84,15 @@ HWY_NOINLINE void MulAddLoop(const D d, const T* HWY_RESTRICT mul_array,
 struct TestSumMulAdd {
   template <class T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
-    RandomState rng{1234};
+    RandomState rng;
     const size_t kSize = 64;
     HWY_ALIGN T mul[kSize];
     HWY_ALIGN T x[kSize];
     HWY_ALIGN T add[kSize];
     for (size_t i = 0; i < kSize; ++i) {
-      mul[i] = Random32(&rng) & 0xF;
-      x[i] = Random32(&rng) & 0xFF;
-      add[i] = Random32(&rng) & 0xFF;
+      mul[i] = static_cast<T>(Random32(&rng) & 0xF);
+      x[i] = static_cast<T>(Random32(&rng) & 0xFF);
+      add[i] = static_cast<T>(Random32(&rng) & 0xFF);
     }
     MulAddLoop(d, mul, add, kSize, x);
     double sum = 0.0;
@@ -233,7 +226,7 @@ struct TestSet {
     const auto v0 = Zero(d);
     const size_t N = Lanes(d);
     auto expected = AllocateAligned<T>(N);
-    std::fill(expected.get(), expected.get() + N, 0);
+    std::fill(expected.get(), expected.get() + N, T(0));
     HWY_ASSERT_VEC_EQ(d, expected.get(), v0);
 
     // Set
@@ -246,7 +239,7 @@ struct TestSet {
     // Iota
     const auto vi = Iota(d, T(5));
     for (size_t i = 0; i < N; ++i) {
-      expected[i] = 5 + i;
+      expected[i] = T(5 + i);
     }
     HWY_ASSERT_VEC_EQ(d, expected.get(), vi);
 
@@ -262,15 +255,15 @@ struct TestSignBitInteger {
   template <class T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
     const auto v0 = Zero(d);
-    const auto all = VecFromMask(v0 == v0);
+    const auto all = VecFromMask(d, Eq(v0, v0));
     const auto vs = SignBit(d);
-    const auto other = vs - Set(d, 1);
+    const auto other = Sub(vs, Set(d, 1));
 
     // Shifting left by one => overflow, equal zero
-    HWY_ASSERT_VEC_EQ(d, v0, vs + vs);
+    HWY_ASSERT_VEC_EQ(d, v0, Add(vs, vs));
     // Verify the lower bits are zero (only +/- and logical ops are available
     // for all types)
-    HWY_ASSERT_VEC_EQ(d, all, vs + other);
+    HWY_ASSERT_VEC_EQ(d, all, Add(vs, other));
   }
 };
 
@@ -323,18 +316,30 @@ HWY_NOINLINE void TestAllGetLane() {
   ForAllTypes(ForPartialVectors<TestGetLane>());
 }
 
+HWY_NOINLINE void TestAllPopCount() {
+  HWY_ASSERT_EQ(size_t(0), PopCount(0u));
+  HWY_ASSERT_EQ(size_t(1), PopCount(1u));
+  HWY_ASSERT_EQ(size_t(1), PopCount(2u));
+  HWY_ASSERT_EQ(size_t(2), PopCount(3u));
+  HWY_ASSERT_EQ(size_t(1), PopCount(0x80000000u));
+  HWY_ASSERT_EQ(size_t(31), PopCount(0x7FFFFFFFu));
+  HWY_ASSERT_EQ(size_t(32), PopCount(0xFFFFFFFFu));
+
+  HWY_ASSERT_EQ(size_t(1), PopCount(0x80000000ull));
+  HWY_ASSERT_EQ(size_t(31), PopCount(0x7FFFFFFFull));
+  HWY_ASSERT_EQ(size_t(32), PopCount(0xFFFFFFFFull));
+  HWY_ASSERT_EQ(size_t(33), PopCount(0x10FFFFFFFFull));
+  HWY_ASSERT_EQ(size_t(63), PopCount(0xFFFEFFFFFFFFFFFFull));
+  HWY_ASSERT_EQ(size_t(64), PopCount(0xFFFFFFFFFFFFFFFFull));
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace hwy
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-namespace hwy {
-
-class HwyHwyTest : public hwy::TestWithParamTarget {};
-
-HWY_TARGET_INSTANTIATE_TEST_SUITE_P(HwyHwyTest);
-
+HWY_BEFORE_TEST(HwyHwyTest);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllFloorLog2);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllSumMulAdd);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestLimits);
@@ -346,6 +351,6 @@ HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllSignBit);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllName);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllCopyAndAssign);
 HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllGetLane);
-
-}  // namespace hwy
+HWY_EXPORT_AND_TEST_P(HwyHwyTest, TestAllPopCount);
+HWY_AFTER_TEST();
 #endif

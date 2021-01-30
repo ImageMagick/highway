@@ -54,8 +54,8 @@
 #define HWY_LANES(T) (16 / sizeof(T))
 
 #define HWY_GATHER_LANES(T) 1
-#define HWY_VARIABLE_SHIFT_LANES(T) 1
-#define HWY_COMPARE64_LANES 1
+#define HWY_VARIABLE_SHIFT_LANES(T) HWY_LANES(T)
+#define HWY_COMPARE64_LANES 2
 #define HWY_MINMAX64_LANES 1
 
 #define HWY_CAP_INTEGER64 1
@@ -84,9 +84,9 @@
 #define HWY_CAP_GE512 0
 
 #if defined(HWY_DISABLE_BMI2_FMA)
-#define HWY_TARGET_STR "avx,avx2"
+#define HWY_TARGET_STR "avx,avx2,f16c"
 #else
-#define HWY_TARGET_STR "avx,avx2,bmi,bmi2,fma"
+#define HWY_TARGET_STR "avx,avx2,bmi,bmi2,fma,f16c"
 #endif
 
 //-----------------------------------------------------------------------------
@@ -112,7 +112,7 @@
 // converting to half-vectors). HWY_DISABLE_BMI2_FMA is not relevant because if
 // we have AVX3, we should also have BMI2/FMA.
 #define HWY_TARGET_STR \
-  "avx,avx2,bmi,bmi2,fma,avx512f,avx512vl,avx512dq,avx512bw"
+  "avx,avx2,bmi,bmi2,fma,f16c,avx512f,avx512vl,avx512dq,avx512bw"
 
 //-----------------------------------------------------------------------------
 // PPC8
@@ -144,17 +144,16 @@
 
 #define HWY_GATHER_LANES(T) 1
 #define HWY_VARIABLE_SHIFT_LANES(T) HWY_LANES(T)
-#define HWY_MINMAX64_LANES 1
+#define HWY_MINMAX64_LANES 2
+#define HWY_COMPARE64_LANES 2
 
 #define HWY_CAP_INTEGER64 1
 #define HWY_CAP_GE256 0
 #define HWY_CAP_GE512 0
 
 #ifdef __arm__
-#define HWY_COMPARE64_LANES 1
 #define HWY_CAP_FLOAT64 0
 #else
-#define HWY_COMPARE64_LANES 2
 #define HWY_CAP_FLOAT64 1
 #endif
 
@@ -170,9 +169,9 @@
 #define HWY_LANES(T) (16 / sizeof(T))
 
 #define HWY_GATHER_LANES(T) 1
-#define HWY_VARIABLE_SHIFT_LANES(T) 1
-#define HWY_COMPARE64_LANES 1
-#define HWY_MINMAX64_LANES 1
+#define HWY_VARIABLE_SHIFT_LANES(T) HWY_LANES(T)
+#define HWY_COMPARE64_LANES 2
+#define HWY_MINMAX64_LANES 2
 
 #define HWY_CAP_INTEGER64 0
 #define HWY_CAP_FLOAT64 0
@@ -182,6 +181,34 @@
 #define HWY_NAMESPACE N_WASM
 
 #define HWY_TARGET_STR "simd128"
+
+//-----------------------------------------------------------------------------
+// RVV
+#elif HWY_TARGET == HWY_RVV
+
+// RVV only requires lane alignment, not natural alignment of the entire vector,
+// and the compiler already aligns builtin types, so nothing to do here.
+#define HWY_ALIGN
+
+// Arbitrary constant, not the actual lane count! Large enough that we can
+// mul/div by 8 for LMUL. Value matches kMaxVectorSize, see base.h.
+#define HWY_LANES(T) (4096 / sizeof(T))
+
+#define HWY_GATHER_LANES(T) HWY_LANES(T)
+#define HWY_VARIABLE_SHIFT_LANES(T) HWY_LANES(T)
+// Cannot use HWY_LANES/sizeof here because these are used in an #if.
+#define HWY_COMPARE64_LANES 256
+#define HWY_MINMAX64_LANES 256
+
+#define HWY_CAP_INTEGER64 1
+#define HWY_CAP_FLOAT64 1
+#define HWY_CAP_GE256 0
+#define HWY_CAP_GE512 0
+
+#define HWY_NAMESPACE N_RVV
+
+// HWY_TARGET_STR remains undefined so HWY_ATTR is a no-op.
+// (rv64gcv is not a valid target)
 
 //-----------------------------------------------------------------------------
 // SCALAR

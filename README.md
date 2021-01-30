@@ -15,8 +15,16 @@ applying the same operation to 'lanes'.
 ## Current status
 
 Supported targets: scalar, SSE4, AVX2, AVX-512, NEON (ARMv7 and v8), WASM SIMD.
+A port to RVV is in progress.
 
-Tested on GCC 10.2.0 and Clang 9.0.1.
+Version 0.7 is considered stable enough to use in other projects, and is
+expected to remain backwards compatible unless serious issues are discovered
+while implementing SVE/RVV targets. After these targets are added, Highway will
+reach version 1.0.
+
+Continuous integration tests use a recent version of Clang (9.0.1 should
+suffice) and older version of MSVC (VS2015). Also periodically tested on GCC
+10.2.0.
 
 ## Installation
 

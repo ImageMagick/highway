@@ -198,35 +198,32 @@ HWY_DIAGNOSTICS_OFF(disable : 4700, ignored "-Wuninitialized")
 // Returns a vector with uninitialized elements.
 template <typename T>
 HWY_API Vec512<T> Undefined(Full512<T> /* tag */) {
-#ifdef __clang__
+  // Available on Clang 6.0, GCC 6.2, ICC 16.03, MSVC 19.14. All but ICC
+  // generate an XOR instruction.
   return Vec512<T>{_mm512_undefined_epi32()};
-#else
-  __m512i raw;
-  return Vec512<T>{raw};
-#endif
 }
 HWY_API Vec512<float> Undefined(Full512<float> /* tag */) {
-#ifdef __clang__
   return Vec512<float>{_mm512_undefined_ps()};
-#else
-  __m512 raw;
-  return Vec512<float>{raw};
-#endif
 }
 HWY_API Vec512<double> Undefined(Full512<double> /* tag */) {
-#ifdef __clang__
   return Vec512<double>{_mm512_undefined_pd()};
-#else
-  __m512d raw;
-  return Vec512<double>{raw};
-#endif
 }
 
 HWY_DIAGNOSTICS(pop)
 
 // ================================================== LOGICAL
 
-// ------------------------------ Bitwise AND
+// ------------------------------ Not
+
+template <typename T>
+HWY_API Vec512<T> Not(const Vec512<T> v) {
+  using TU = MakeUnsigned<T>;
+  const __m512i vu = BitCast(Full512<TU>(), v).raw;
+  return BitCast(Full512<T>(),
+                 Vec512<TU>{_mm512_ternarylogic_epi32(vu, vu, vu, 0x55)});
+}
+
+// ------------------------------ And
 
 template <typename T>
 HWY_API Vec512<T> And(const Vec512<T> a, const Vec512<T> b) {
@@ -240,7 +237,7 @@ HWY_API Vec512<double> And(const Vec512<double> a, const Vec512<double> b) {
   return Vec512<double>{_mm512_and_pd(a.raw, b.raw)};
 }
 
-// ------------------------------ Bitwise AND-NOT
+// ------------------------------ AndNot
 
 // Returns ~not_mask & mask.
 template <typename T>
@@ -256,7 +253,7 @@ HWY_API Vec512<double> AndNot(const Vec512<double> not_mask,
   return Vec512<double>{_mm512_andnot_pd(not_mask.raw, mask.raw)};
 }
 
-// ------------------------------ Bitwise OR
+// ------------------------------ Or
 
 template <typename T>
 HWY_API Vec512<T> Or(const Vec512<T> a, const Vec512<T> b) {
@@ -270,7 +267,7 @@ HWY_API Vec512<double> Or(const Vec512<double> a, const Vec512<double> b) {
   return Vec512<double>{_mm512_or_pd(a.raw, b.raw)};
 }
 
-// ------------------------------ Bitwise XOR
+// ------------------------------ Xor
 
 template <typename T>
 HWY_API Vec512<T> Xor(const Vec512<T> a, const Vec512<T> b) {
@@ -646,88 +643,181 @@ HWY_API Vec512<double> Abs(const Vec512<double> v) {
   return Vec512<double>{_mm512_abs_pd(v.raw)};
 }
 
-// ------------------------------ Shift lanes by constant #bits
+// ------------------------------ ShiftLeft
 
-// Unsigned
 template <int kBits>
 HWY_API Vec512<uint16_t> ShiftLeft(const Vec512<uint16_t> v) {
   return Vec512<uint16_t>{_mm512_slli_epi16(v.raw, kBits)};
 }
-template <int kBits>
-HWY_API Vec512<uint16_t> ShiftRight(const Vec512<uint16_t> v) {
-  return Vec512<uint16_t>{_mm512_srli_epi16(v.raw, kBits)};
-}
+
 template <int kBits>
 HWY_API Vec512<uint32_t> ShiftLeft(const Vec512<uint32_t> v) {
   return Vec512<uint32_t>{_mm512_slli_epi32(v.raw, kBits)};
 }
-template <int kBits>
-HWY_API Vec512<uint32_t> ShiftRight(const Vec512<uint32_t> v) {
-  return Vec512<uint32_t>{_mm512_srli_epi32(v.raw, kBits)};
-}
+
 template <int kBits>
 HWY_API Vec512<uint64_t> ShiftLeft(const Vec512<uint64_t> v) {
   return Vec512<uint64_t>{_mm512_slli_epi64(v.raw, kBits)};
 }
-template <int kBits>
-HWY_API Vec512<uint64_t> ShiftRight(const Vec512<uint64_t> v) {
-  return Vec512<uint64_t>{_mm512_srli_epi64(v.raw, kBits)};
-}
 
-// Signed (no i64 ShiftRight)
 template <int kBits>
 HWY_API Vec512<int16_t> ShiftLeft(const Vec512<int16_t> v) {
   return Vec512<int16_t>{_mm512_slli_epi16(v.raw, kBits)};
 }
-template <int kBits>
-HWY_API Vec512<int16_t> ShiftRight(const Vec512<int16_t> v) {
-  return Vec512<int16_t>{_mm512_srai_epi16(v.raw, kBits)};
-}
+
 template <int kBits>
 HWY_API Vec512<int32_t> ShiftLeft(const Vec512<int32_t> v) {
   return Vec512<int32_t>{_mm512_slli_epi32(v.raw, kBits)};
 }
-template <int kBits>
-HWY_API Vec512<int32_t> ShiftRight(const Vec512<int32_t> v) {
-  return Vec512<int32_t>{_mm512_srai_epi32(v.raw, kBits)};
-}
+
 template <int kBits>
 HWY_API Vec512<int64_t> ShiftLeft(const Vec512<int64_t> v) {
   return Vec512<int64_t>{_mm512_slli_epi64(v.raw, kBits)};
 }
 
-// ------------------------------ Shift lanes by independent variable #bits
+// ------------------------------ ShiftRight
 
-// Unsigned (no u8,u16)
+template <int kBits>
+HWY_API Vec512<uint16_t> ShiftRight(const Vec512<uint16_t> v) {
+  return Vec512<uint16_t>{_mm512_srli_epi16(v.raw, kBits)};
+}
+
+template <int kBits>
+HWY_API Vec512<uint32_t> ShiftRight(const Vec512<uint32_t> v) {
+  return Vec512<uint32_t>{_mm512_srli_epi32(v.raw, kBits)};
+}
+
+template <int kBits>
+HWY_API Vec512<uint64_t> ShiftRight(const Vec512<uint64_t> v) {
+  return Vec512<uint64_t>{_mm512_srli_epi64(v.raw, kBits)};
+}
+
+template <int kBits>
+HWY_API Vec512<int16_t> ShiftRight(const Vec512<int16_t> v) {
+  return Vec512<int16_t>{_mm512_srai_epi16(v.raw, kBits)};
+}
+
+template <int kBits>
+HWY_API Vec512<int32_t> ShiftRight(const Vec512<int32_t> v) {
+  return Vec512<int32_t>{_mm512_srai_epi32(v.raw, kBits)};
+}
+
+template <int kBits>
+HWY_API Vec512<int64_t> ShiftRight(const Vec512<int64_t> v) {
+  return Vec512<int64_t>{_mm512_srai_epi64(v.raw, kBits)};
+}
+
+// ------------------------------ ShiftLeftSame
+
+HWY_API Vec512<uint16_t> ShiftLeftSame(const Vec512<uint16_t> v,
+                                       const int bits) {
+  return Vec512<uint16_t>{_mm512_sll_epi16(v.raw, _mm_cvtsi32_si128(bits))};
+}
+HWY_API Vec512<uint32_t> ShiftLeftSame(const Vec512<uint32_t> v,
+                                       const int bits) {
+  return Vec512<uint32_t>{_mm512_sll_epi32(v.raw, _mm_cvtsi32_si128(bits))};
+}
+HWY_API Vec512<uint64_t> ShiftLeftSame(const Vec512<uint64_t> v,
+                                       const int bits) {
+  return Vec512<uint64_t>{_mm512_sll_epi64(v.raw, _mm_cvtsi32_si128(bits))};
+}
+
+HWY_API Vec512<int16_t> ShiftLeftSame(const Vec512<int16_t> v, const int bits) {
+  return Vec512<int16_t>{_mm512_sll_epi16(v.raw, _mm_cvtsi32_si128(bits))};
+}
+
+HWY_API Vec512<int32_t> ShiftLeftSame(const Vec512<int32_t> v, const int bits) {
+  return Vec512<int32_t>{_mm512_sll_epi32(v.raw, _mm_cvtsi32_si128(bits))};
+}
+
+HWY_API Vec512<int64_t> ShiftLeftSame(const Vec512<int64_t> v, const int bits) {
+  return Vec512<int64_t>{_mm512_sll_epi64(v.raw, _mm_cvtsi32_si128(bits))};
+}
+
+// ------------------------------ ShiftRightSame
+
+HWY_API Vec512<uint16_t> ShiftRightSame(const Vec512<uint16_t> v,
+                                        const int bits) {
+  return Vec512<uint16_t>{_mm512_srl_epi16(v.raw, _mm_cvtsi32_si128(bits))};
+}
+HWY_API Vec512<uint32_t> ShiftRightSame(const Vec512<uint32_t> v,
+                                        const int bits) {
+  return Vec512<uint32_t>{_mm512_srl_epi32(v.raw, _mm_cvtsi32_si128(bits))};
+}
+HWY_API Vec512<uint64_t> ShiftRightSame(const Vec512<uint64_t> v,
+                                        const int bits) {
+  return Vec512<uint64_t>{_mm512_srl_epi64(v.raw, _mm_cvtsi32_si128(bits))};
+}
+
+HWY_API Vec512<int16_t> ShiftRightSame(const Vec512<int16_t> v,
+                                       const int bits) {
+  return Vec512<int16_t>{_mm512_sra_epi16(v.raw, _mm_cvtsi32_si128(bits))};
+}
+
+HWY_API Vec512<int32_t> ShiftRightSame(const Vec512<int32_t> v,
+                                       const int bits) {
+  return Vec512<int32_t>{_mm512_sra_epi32(v.raw, _mm_cvtsi32_si128(bits))};
+}
+HWY_API Vec512<int64_t> ShiftRightSame(const Vec512<int64_t> v,
+                                       const int bits) {
+  return Vec512<int64_t>{_mm512_sra_epi64(v.raw, _mm_cvtsi32_si128(bits))};
+}
+
+// ------------------------------ Shl
+
+HWY_API Vec512<uint16_t> operator<<(const Vec512<uint16_t> v,
+                                    const Vec512<uint16_t> bits) {
+  return Vec512<uint16_t>{_mm512_sllv_epi16(v.raw, bits.raw)};
+}
+
 HWY_API Vec512<uint32_t> operator<<(const Vec512<uint32_t> v,
                                     const Vec512<uint32_t> bits) {
   return Vec512<uint32_t>{_mm512_sllv_epi32(v.raw, bits.raw)};
 }
-HWY_API Vec512<uint32_t> operator>>(const Vec512<uint32_t> v,
-                                    const Vec512<uint32_t> bits) {
-  return Vec512<uint32_t>{_mm512_srlv_epi32(v.raw, bits.raw)};
-}
+
 HWY_API Vec512<uint64_t> operator<<(const Vec512<uint64_t> v,
                                     const Vec512<uint64_t> bits) {
   return Vec512<uint64_t>{_mm512_sllv_epi64(v.raw, bits.raw)};
 }
+
+// Signed left shift is the same as unsigned.
+template <typename T, HWY_IF_SIGNED(T)>
+HWY_API Vec512<T> operator<<(const Vec512<T> v, const Vec512<T> bits) {
+  const Full512<T> di;
+  const Full512<MakeUnsigned<T>> du;
+  return BitCast(di, BitCast(du, v) << BitCast(du, bits));
+}
+
+// ------------------------------ Shr
+
+HWY_API Vec512<uint16_t> operator>>(const Vec512<uint16_t> v,
+                                    const Vec512<uint16_t> bits) {
+  return Vec512<uint16_t>{_mm512_srlv_epi16(v.raw, bits.raw)};
+}
+
+HWY_API Vec512<uint32_t> operator>>(const Vec512<uint32_t> v,
+                                    const Vec512<uint32_t> bits) {
+  return Vec512<uint32_t>{_mm512_srlv_epi32(v.raw, bits.raw)};
+}
+
 HWY_API Vec512<uint64_t> operator>>(const Vec512<uint64_t> v,
                                     const Vec512<uint64_t> bits) {
   return Vec512<uint64_t>{_mm512_srlv_epi64(v.raw, bits.raw)};
 }
 
-// Signed (no i8,i16,i64)
-HWY_API Vec512<int32_t> operator<<(const Vec512<int32_t> v,
-                                   const Vec512<int32_t> bits) {
-  return Vec512<int32_t>{_mm512_sllv_epi32(v.raw, bits.raw)};
+HWY_API Vec512<int16_t> operator>>(const Vec512<int16_t> v,
+                                   const Vec512<int16_t> bits) {
+  return Vec512<int16_t>{_mm512_srav_epi16(v.raw, bits.raw)};
 }
+
 HWY_API Vec512<int32_t> operator>>(const Vec512<int32_t> v,
                                    const Vec512<int32_t> bits) {
   return Vec512<int32_t>{_mm512_srav_epi32(v.raw, bits.raw)};
 }
-HWY_API Vec512<int64_t> operator<<(const Vec512<int64_t> v,
+
+HWY_API Vec512<int64_t> operator>>(const Vec512<int64_t> v,
                                    const Vec512<int64_t> bits) {
-  return Vec512<int64_t>{_mm512_sllv_epi64(v.raw, bits.raw)};
+  return Vec512<int64_t>{_mm512_srav_epi64(v.raw, bits.raw)};
 }
 
 // ------------------------------ Minimum
@@ -998,7 +1088,13 @@ HWY_API Vec512<double> Floor(const Vec512<double> v) {
 
 // ================================================== COMPARE
 
-// Comparisons fill a lane with 1-bits if the condition is true, else 0.
+// Comparisons set a mask bit to 1 if the condition is true, else 0.
+
+template <typename TFrom, typename TTo>
+HWY_API Mask512<TTo> RebindMask(Full512<TTo> /*tag*/, Mask512<TFrom> m) {
+  static_assert(sizeof(TFrom) == sizeof(TTo), "Must have same size");
+  return Mask512<TTo>{m.raw};
+}
 
 namespace detail {
 
@@ -1218,6 +1314,161 @@ HWY_API Vec512<int64_t> VecFromMask(const Mask512<int64_t> v) {
 }
 HWY_API Vec512<double> VecFromMask(const Mask512<double> v) {
   return Vec512<double>{_mm512_castsi512_pd(_mm512_movm_epi64(v.raw))};
+}
+
+template <typename T>
+HWY_API Vec512<T> VecFromMask(Full512<T> /* tag */, const Mask512<T> v) {
+  return VecFromMask(v);
+}
+
+// ------------------------------ Mask logical
+
+namespace detail {
+
+template <typename T>
+HWY_API Mask512<T> Not(hwy::SizeTag<1> /*tag*/, const Mask512<T> m) {
+  return Mask512<T>{_knot_mask64(m.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> Not(hwy::SizeTag<2> /*tag*/, const Mask512<T> m) {
+  return Mask512<T>{_knot_mask32(m.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> Not(hwy::SizeTag<4> /*tag*/, const Mask512<T> m) {
+  return Mask512<T>{_knot_mask16(m.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> Not(hwy::SizeTag<8> /*tag*/, const Mask512<T> m) {
+  return Mask512<T>{_knot_mask8(m.raw)};
+}
+
+template <typename T>
+HWY_API Mask512<T> And(hwy::SizeTag<1> /*tag*/, const Mask512<T> a,
+                       const Mask512<T> b) {
+  return Mask512<T>{_kand_mask64(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> And(hwy::SizeTag<2> /*tag*/, const Mask512<T> a,
+                       const Mask512<T> b) {
+  return Mask512<T>{_kand_mask32(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> And(hwy::SizeTag<4> /*tag*/, const Mask512<T> a,
+                       const Mask512<T> b) {
+  return Mask512<T>{_kand_mask16(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> And(hwy::SizeTag<8> /*tag*/, const Mask512<T> a,
+                       const Mask512<T> b) {
+  return Mask512<T>{_kand_mask8(a.raw, b.raw)};
+}
+
+template <typename T>
+HWY_API Mask512<T> AndNot(hwy::SizeTag<1> /*tag*/, const Mask512<T> a,
+                          const Mask512<T> b) {
+  return Mask512<T>{_kandn_mask64(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> AndNot(hwy::SizeTag<2> /*tag*/, const Mask512<T> a,
+                          const Mask512<T> b) {
+  return Mask512<T>{_kandn_mask32(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> AndNot(hwy::SizeTag<4> /*tag*/, const Mask512<T> a,
+                          const Mask512<T> b) {
+  return Mask512<T>{_kandn_mask16(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> AndNot(hwy::SizeTag<8> /*tag*/, const Mask512<T> a,
+                          const Mask512<T> b) {
+  return Mask512<T>{_kandn_mask8(a.raw, b.raw)};
+}
+
+template <typename T>
+HWY_API Mask512<T> Or(hwy::SizeTag<1> /*tag*/, const Mask512<T> a,
+                      const Mask512<T> b) {
+  return Mask512<T>{_kor_mask64(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> Or(hwy::SizeTag<2> /*tag*/, const Mask512<T> a,
+                      const Mask512<T> b) {
+  return Mask512<T>{_kor_mask32(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> Or(hwy::SizeTag<4> /*tag*/, const Mask512<T> a,
+                      const Mask512<T> b) {
+  return Mask512<T>{_kor_mask16(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> Or(hwy::SizeTag<8> /*tag*/, const Mask512<T> a,
+                      const Mask512<T> b) {
+  return Mask512<T>{_kor_mask8(a.raw, b.raw)};
+}
+
+template <typename T>
+HWY_API Mask512<T> Xor(hwy::SizeTag<1> /*tag*/, const Mask512<T> a,
+                       const Mask512<T> b) {
+  return Mask512<T>{_kxor_mask64(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> Xor(hwy::SizeTag<2> /*tag*/, const Mask512<T> a,
+                       const Mask512<T> b) {
+  return Mask512<T>{_kxor_mask32(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> Xor(hwy::SizeTag<4> /*tag*/, const Mask512<T> a,
+                       const Mask512<T> b) {
+  return Mask512<T>{_kxor_mask16(a.raw, b.raw)};
+}
+template <typename T>
+HWY_API Mask512<T> Xor(hwy::SizeTag<8> /*tag*/, const Mask512<T> a,
+                       const Mask512<T> b) {
+  return Mask512<T>{_kxor_mask8(a.raw, b.raw)};
+}
+
+}  // namespace detail
+
+template <typename T>
+HWY_API Mask512<T> Not(const Mask512<T> m) {
+  return detail::Not(hwy::SizeTag<sizeof(T)>(), m);
+}
+
+template <typename T>
+HWY_API Mask512<T> And(const Mask512<T> a, Mask512<T> b) {
+  return detail::And(hwy::SizeTag<sizeof(T)>(), a, b);
+}
+
+template <typename T>
+HWY_API Mask512<T> AndNot(const Mask512<T> a, Mask512<T> b) {
+  return detail::AndNot(hwy::SizeTag<sizeof(T)>(), a, b);
+}
+
+template <typename T>
+HWY_API Mask512<T> Or(const Mask512<T> a, Mask512<T> b) {
+  return detail::Or(hwy::SizeTag<sizeof(T)>(), a, b);
+}
+
+template <typename T>
+HWY_API Mask512<T> Xor(const Mask512<T> a, Mask512<T> b) {
+  return detail::Xor(hwy::SizeTag<sizeof(T)>(), a, b);
+}
+
+// ------------------------------ BroadcastSignBit (ShiftRight, compare, mask)
+
+HWY_API Vec512<int8_t> BroadcastSignBit(const Vec512<int8_t> v) {
+  return VecFromMask(v < Zero(Full512<int8_t>()));
+}
+
+HWY_API Vec512<int16_t> BroadcastSignBit(const Vec512<int16_t> v) {
+  return ShiftRight<15>(v);
+}
+
+HWY_API Vec512<int32_t> BroadcastSignBit(const Vec512<int32_t> v) {
+  return ShiftRight<31>(v);
+}
+
+HWY_API Vec512<int64_t> BroadcastSignBit(const Vec512<int64_t> v) {
+  return Vec512<int64_t>{_mm512_srai_epi64(v.raw, 63)};
 }
 
 // ================================================== MEMORY
@@ -1683,35 +1934,35 @@ HWY_API Vec512<float> Shuffle0123(const Vec512<float> v) {
   return Vec512<float>{_mm512_shuffle_ps(v.raw, v.raw, _MM_PERM_ABCD)};
 }
 
-// ------------------------------ Permute (runtime variable)
+// ------------------------------ TableLookupLanes
 
 // Returned by SetTableIndices for use by TableLookupLanes.
 template <typename T>
-struct Permute512 {
+struct Indices512 {
   __m512i raw;
 };
 
 template <typename T>
-HWY_API Permute512<T> SetTableIndices(const Full512<T>, const int32_t* idx) {
+HWY_API Indices512<T> SetTableIndices(const Full512<T>, const int32_t* idx) {
 #if !defined(NDEBUG) || defined(ADDRESS_SANITIZER)
   const size_t N = 64 / sizeof(T);
   for (size_t i = 0; i < N; ++i) {
     HWY_DASSERT(0 <= idx[i] && idx[i] < static_cast<int32_t>(N));
   }
 #endif
-  return Permute512<T>{LoadU(Full512<int32_t>(), idx).raw};
+  return Indices512<T>{LoadU(Full512<int32_t>(), idx).raw};
 }
 
 HWY_API Vec512<uint32_t> TableLookupLanes(const Vec512<uint32_t> v,
-                                          const Permute512<uint32_t> idx) {
+                                          const Indices512<uint32_t> idx) {
   return Vec512<uint32_t>{_mm512_permutexvar_epi32(idx.raw, v.raw)};
 }
 HWY_API Vec512<int32_t> TableLookupLanes(const Vec512<int32_t> v,
-                                         const Permute512<int32_t> idx) {
+                                         const Indices512<int32_t> idx) {
   return Vec512<int32_t>{_mm512_permutexvar_epi32(idx.raw, v.raw)};
 }
 HWY_API Vec512<float> TableLookupLanes(const Vec512<float> v,
-                                       const Permute512<float> idx) {
+                                       const Indices512<float> idx) {
   return Vec512<float>{_mm512_permutexvar_ps(idx.raw, v.raw)};
 }
 
@@ -1864,7 +2115,7 @@ HWY_API Vec512<int64_t> ZipUpper(const Vec512<int32_t> a,
   return Vec512<int64_t>{_mm512_unpackhi_epi32(a.raw, b.raw)};
 }
 
-// ------------------------------ Blocks
+// ------------------------------ Concat* halves
 
 // hiH,hiL loH,loL |-> hiL,loL (= lower halves)
 template <typename T>
@@ -1946,17 +2197,22 @@ HWY_API Vec512<T> OddEven(const Vec512<T> a, const Vec512<T> b) {
 
 // ------------------------------ Shuffle bytes with variable indices
 
-// Returns vector of bytes[from[i]]. "from" is also interpreted as bytes:
-// either valid indices in [0, 16) or >= 0x80 to zero the i-th output byte.
-template <typename T, typename TI>
+// Returns vector of bytes[from[i]]. "from" is also interpreted as bytes, i.e.
+// lane indices in [0, 16).
+template <typename T>
 HWY_API Vec512<T> TableLookupBytes(const Vec512<T> bytes,
-                                   const Vec512<TI> from) {
+                                   const Vec512<T> from) {
   return Vec512<T>{_mm512_shuffle_epi8(bytes.raw, from.raw)};
 }
 
 // ================================================== CONVERT
 
 // ------------------------------ Promotions (part w/ narrow lanes -> full)
+
+HWY_API Vec512<float> PromoteTo(Full512<float> /* tag */,
+                                const Vec256<float16_t> v) {
+  return Vec512<float>{_mm512_cvtph_ps(v.raw)};
+}
 
 HWY_API Vec512<double> PromoteTo(Full512<double> /* tag */, Vec256<float> v) {
   return Vec512<double>{_mm512_cvtps_pd(v.raw)};
@@ -1996,18 +2252,6 @@ HWY_API Vec512<int32_t> PromoteTo(Full512<int32_t> /* tag */,
 HWY_API Vec512<uint64_t> PromoteTo(Full512<uint64_t> /* tag */,
                                    Vec256<uint32_t> v) {
   return Vec512<uint64_t>{_mm512_cvtepu32_epi64(v.raw)};
-}
-
-// Special case for "v" with all blocks equal (e.g. from LoadDup128):
-// single-cycle latency instead of 3.
-HWY_API Vec512<uint32_t> U32FromU8(const Vec512<uint8_t> v) {
-  const Full512<uint32_t> d32;
-  alignas(64) static constexpr uint32_t k32From8[16] = {
-      0xFFFFFF00UL, 0xFFFFFF01UL, 0xFFFFFF02UL, 0xFFFFFF03UL,
-      0xFFFFFF04UL, 0xFFFFFF05UL, 0xFFFFFF06UL, 0xFFFFFF07UL,
-      0xFFFFFF08UL, 0xFFFFFF09UL, 0xFFFFFF0AUL, 0xFFFFFF0BUL,
-      0xFFFFFF0CUL, 0xFFFFFF0DUL, 0xFFFFFF0EUL, 0xFFFFFF0FUL};
-  return TableLookupBytes(BitCast(d32, v), Load(d32, k32From8));
 }
 
 // Signed: replicate sign bit.
@@ -2058,7 +2302,11 @@ HWY_API Vec256<int16_t> DemoteTo(Full256<int16_t> /* tag */,
 HWY_API Vec128<uint8_t, 16> DemoteTo(Full128<uint8_t> /* tag */,
                                      const Vec512<int32_t> v) {
   const Vec512<uint16_t> u16{_mm512_packus_epi32(v.raw, v.raw)};
-  const Vec512<uint8_t> u8{_mm512_packus_epi16(u16.raw, u16.raw)};
+  // packus treats the input as signed; we want unsigned. Clear the MSB to get
+  // unsigned saturation to u8.
+  const Vec512<int16_t> i16{
+      _mm512_and_si512(u16.raw, _mm512_set1_epi16(0x7FFF))};
+  const Vec512<uint8_t> u8{_mm512_packus_epi16(i16.raw, i16.raw)};
 
   alignas(16) static constexpr uint32_t kLanes[4] = {0, 4, 8, 12};
   const auto idx32 = LoadDup128(Full512<uint32_t>(), kLanes);
@@ -2100,6 +2348,11 @@ HWY_API Vec256<int8_t> DemoteTo(Full256<int8_t> /* tag */,
   return LowerHalf(even);
 }
 
+HWY_API Vec256<float16_t> DemoteTo(Full256<float16_t> /* tag */,
+                                   const Vec512<float> v) {
+  return Vec256<float16_t>{_mm512_cvtps_ph(v.raw, _MM_FROUND_NO_EXC)};
+}
+
 HWY_API Vec256<float> DemoteTo(Full256<float> /* tag */,
                                const Vec512<double> v) {
   return Vec256<float>{_mm512_cvtpd_ps(v.raw)};
@@ -2107,7 +2360,8 @@ HWY_API Vec256<float> DemoteTo(Full256<float> /* tag */,
 
 HWY_API Vec256<int32_t> DemoteTo(Full256<int32_t> /* tag */,
                                  const Vec512<double> v) {
-  return Vec256<int32_t>{_mm512_cvttpd_epi32(v.raw)};
+  const auto clamped = detail::ClampF64ToI32Max(Full512<double>(), v);
+  return Vec256<int32_t>{_mm512_cvttpd_epi32(clamped.raw)};
 }
 
 // For already range-limited input [0, 255].
@@ -2138,17 +2392,16 @@ HWY_API Vec512<double> ConvertTo(Full512<double> /* tag */,
 }
 
 // Truncates (rounds toward zero).
-HWY_API Vec512<int32_t> ConvertTo(Full512<int32_t> /* tag */,
-                                  const Vec512<float> v) {
-  return Vec512<int32_t>{_mm512_cvttps_epi32(v.raw)};
+HWY_API Vec512<int32_t> ConvertTo(Full512<int32_t> d, const Vec512<float> v) {
+  return detail::FixConversionOverflow(d, v, _mm512_cvttps_epi32(v.raw));
 }
-HWY_API Vec512<int64_t> ConvertTo(Full512<int64_t> /* tag */,
-                                  const Vec512<double> v) {
-  return Vec512<int64_t>{_mm512_cvttpd_epi64(v.raw)};
+HWY_API Vec512<int64_t> ConvertTo(Full512<int64_t> di, const Vec512<double> v) {
+  return detail::FixConversionOverflow(di, v, _mm512_cvttpd_epi64(v.raw));
 }
 
 HWY_API Vec512<int32_t> NearestInt(const Vec512<float> v) {
-  return Vec512<int32_t>{_mm512_cvtps_epi32(v.raw)};
+  const Full512<int32_t> di;
+  return detail::FixConversionOverflow(di, v, _mm512_cvtps_epi32(v.raw));
 }
 
 // ================================================== MISC
@@ -2260,8 +2513,10 @@ HWY_API bool AllTrue(const Mask512<T> v) {
 }
 
 template <typename T>
-HWY_API uint64_t BitsFromMask(const Mask512<T> mask) {
-  return mask.raw;
+HWY_INLINE size_t StoreMaskBits(const Mask512<T> mask, uint8_t* p) {
+  const size_t kNumBytes = 8 / sizeof(T);
+  CopyBytes<kNumBytes>(&mask.raw, p);
+  return kNumBytes;
 }
 
 template <typename T>
@@ -2269,12 +2524,77 @@ HWY_API size_t CountTrue(const Mask512<T> mask) {
   return PopCount(mask.raw);
 }
 
-// ------------------------------ Reductions
+// ------------------------------ Compress
 
-// Returns 64-bit sums of 8-byte groups.
-HWY_API Vec512<uint64_t> SumsOfU8x8(const Vec512<uint8_t> v) {
-  return Vec512<uint64_t>{_mm512_sad_epu8(v.raw, _mm512_setzero_si512())};
+HWY_API Vec512<uint32_t> Compress(Vec512<uint32_t> v,
+                                  const Mask512<uint32_t> mask) {
+  return Vec512<uint32_t>{_mm512_maskz_compress_epi32(mask.raw, v.raw)};
 }
+HWY_API Vec512<int32_t> Compress(Vec512<int32_t> v,
+                                 const Mask512<int32_t> mask) {
+  return Vec512<int32_t>{_mm512_maskz_compress_epi32(mask.raw, v.raw)};
+}
+
+HWY_API Vec512<uint64_t> Compress(Vec512<uint64_t> v,
+                                  const Mask512<uint64_t> mask) {
+  return Vec512<uint64_t>{_mm512_maskz_compress_epi64(mask.raw, v.raw)};
+}
+HWY_API Vec512<int64_t> Compress(Vec512<int64_t> v,
+                                 const Mask512<int64_t> mask) {
+  return Vec512<int64_t>{_mm512_maskz_compress_epi64(mask.raw, v.raw)};
+}
+
+HWY_API Vec512<float> Compress(Vec512<float> v, const Mask512<float> mask) {
+  return Vec512<float>{_mm512_maskz_compress_ps(mask.raw, v.raw)};
+}
+
+HWY_API Vec512<double> Compress(Vec512<double> v, const Mask512<double> mask) {
+  return Vec512<double>{_mm512_maskz_compress_pd(mask.raw, v.raw)};
+}
+
+// ------------------------------ CompressStore
+
+HWY_API size_t CompressStore(Vec512<uint32_t> v, const Mask512<uint32_t> mask,
+                             Full512<uint32_t> /* tag */,
+                             uint32_t* HWY_RESTRICT aligned) {
+  _mm512_mask_compressstoreu_epi32(aligned, mask.raw, v.raw);
+  return CountTrue(mask);
+}
+HWY_API size_t CompressStore(Vec512<int32_t> v, const Mask512<int32_t> mask,
+                             Full512<int32_t> /* tag */,
+                             int32_t* HWY_RESTRICT aligned) {
+  _mm512_mask_compressstoreu_epi32(aligned, mask.raw, v.raw);
+  return CountTrue(mask);
+}
+
+HWY_API size_t CompressStore(Vec512<uint64_t> v, const Mask512<uint64_t> mask,
+                             Full512<uint64_t> /* tag */,
+                             uint64_t* HWY_RESTRICT aligned) {
+  _mm512_mask_compressstoreu_epi64(aligned, mask.raw, v.raw);
+  return CountTrue(mask);
+}
+HWY_API size_t CompressStore(Vec512<int64_t> v, const Mask512<int64_t> mask,
+                             Full512<int64_t> /* tag */,
+                             int64_t* HWY_RESTRICT aligned) {
+  _mm512_mask_compressstoreu_epi64(aligned, mask.raw, v.raw);
+  return CountTrue(mask);
+}
+
+HWY_API size_t CompressStore(Vec512<float> v, const Mask512<float> mask,
+                             Full512<float> /* tag */,
+                             float* HWY_RESTRICT aligned) {
+  _mm512_mask_compressstoreu_ps(aligned, mask.raw, v.raw);
+  return CountTrue(mask);
+}
+
+HWY_API size_t CompressStore(Vec512<double> v, const Mask512<double> mask,
+                             Full512<double> /* tag */,
+                             double* HWY_RESTRICT aligned) {
+  _mm512_mask_compressstoreu_pd(aligned, mask.raw, v.raw);
+  return CountTrue(mask);
+}
+
+// ------------------------------ Reductions
 
 // Returns the sum in each lane.
 HWY_API Vec512<int32_t> SumOfLanes(const Vec512<int32_t> v) {

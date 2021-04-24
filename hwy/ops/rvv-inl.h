@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "hwy/base.h"
 #include "hwy/ops/shared-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -102,6 +103,8 @@ namespace detail {  // for code folding
   HWY_RVV_FOREACH_64(X_MACRO, int, i, NAME, OP)
 
 // SEW for float:
+#define HWY_RVV_FOREACH_F16(X_MACRO, NAME, OP) \
+  HWY_RVV_FOREACH_16(X_MACRO, float, f, NAME, OP)
 #define HWY_RVV_FOREACH_F32(X_MACRO, NAME, OP) \
   HWY_RVV_FOREACH_32(X_MACRO, float, f, NAME, OP)
 #define HWY_RVV_FOREACH_F64(X_MACRO, NAME, OP) \
@@ -121,6 +124,7 @@ namespace detail {  // for code folding
   HWY_RVV_FOREACH_I64(X_MACRO, NAME, OP)
 
 #define HWY_RVV_FOREACH_F(X_MACRO, NAME, OP) \
+  HWY_RVV_FOREACH_F16(X_MACRO, NAME, OP)     \
   HWY_RVV_FOREACH_F32(X_MACRO, NAME, OP)     \
   HWY_RVV_FOREACH_F64(X_MACRO, NAME, OP)
 
@@ -169,6 +173,14 @@ namespace detail {  // for code folding
     using Lane = HWY_RVV_T(BASE, SEW);                                    \
     using type = Simd<Lane, HWY_LANES(Lane) * LMUL>;                      \
   };
+using Vf16m1 = vfloat16m1_t;
+using Vf16m2 = vfloat16m2_t;
+using Vf16m4 = vfloat16m4_t;
+using Vf16m8 = vfloat16m8_t;
+using Df16m1 = Simd<float16_t, HWY_LANES(uint16_t) * 1>;
+using Df16m2 = Simd<float16_t, HWY_LANES(uint16_t) * 2>;
+using Df16m4 = Simd<float16_t, HWY_LANES(uint16_t) * 4>;
+using Df16m8 = Simd<float16_t, HWY_LANES(uint16_t) * 8>;
 
 HWY_RVV_FOREACH(HWY_SPECIALIZE, _, _)
 #undef HWY_SPECIALIZE
@@ -319,7 +331,7 @@ namespace detail {
 HWY_RVV_FOREACH_U(HWY_RVV_RETV_ARGD, Iota0, id_v)
 
 template <class D, class DU = RebindToUnsigned<D>>
-HWY_API VFromD<DU> Iota0(const D d) {
+HWY_API VFromD<DU> Iota0(const D /*d*/) {
   Lanes(DU());
   return BitCastToUnsigned(Iota0(DU()));
 }
@@ -698,7 +710,7 @@ template <class D>
 using MFromD = decltype(MaskFromVec(Zero(D())));
 
 template <class D, typename MFrom>
-HWY_API MFromD<D> RebindMask(const D d, const MFrom mask) {
+HWY_API MFromD<D> RebindMask(const D /*d*/, const MFrom mask) {
   // No need to check lane size/LMUL are the same: if not, casting MFrom to
   // MFromD<D> would fail.
   return mask;
@@ -813,6 +825,33 @@ HWY_API void Stream(const V v, D d, T* HWY_RESTRICT aligned) {
   Store(v, d, aligned);
 }
 
+// ------------------------------ ScatterOffset
+
+#define HWY_RVV_SCATTER(BASE, CHAR, SEW, LMUL, MLEN, NAME, OP) \
+  HWY_API void NAME(HWY_RVV_V(BASE, SEW, LMUL) v,              \
+                    HWY_RVV_D(CHAR, SEW, LMUL) /* d */,        \
+                    HWY_RVV_T(BASE, SEW) * HWY_RESTRICT base,  \
+                    HWY_RVV_V(int, SEW, LMUL) offset) {        \
+    return v##OP##ei##SEW##_v_##CHAR##SEW##m##LMUL(            \
+        base, detail::BitCastToUnsigned(offset), v);           \
+  }
+HWY_RVV_FOREACH(HWY_RVV_SCATTER, ScatterOffset, sx)
+#undef HWY_RVV_SCATTER
+
+// ------------------------------ ScatterIndex
+
+template <class D, HWY_IF_LANE_SIZE_D(D, 4)>
+HWY_API void ScatterIndex(VFromD<D> v, D d, TFromD<D>* HWY_RESTRICT base,
+                          const VFromD<RebindToSigned<D>> index) {
+  return ScatterOffset(v, d, base, ShiftLeft<2>(index));
+}
+
+template <class D, HWY_IF_LANE_SIZE_D(D, 8)>
+HWY_API void ScatterIndex(VFromD<D> v, D d, TFromD<D>* HWY_RESTRICT base,
+                          const VFromD<RebindToSigned<D>> index) {
+  return ScatterOffset(v, d, base, ShiftLeft<3>(index));
+}
+
 // ------------------------------ GatherOffset
 
 #define HWY_RVV_GATHER(BASE, CHAR, SEW, LMUL, MLEN, NAME, OP) \
@@ -839,6 +878,41 @@ HWY_API VFromD<D> GatherIndex(D d, const TFromD<D>* HWY_RESTRICT base,
                               const VFromD<RebindToSigned<D>> index) {
   return GatherOffset(d, base, ShiftLeft<3>(index));
 }
+
+// ------------------------------ StoreInterleaved3
+
+#define HWY_RVV_STORE3(BASE, CHAR, SEW, LMUL, MLEN, NAME, OP)           \
+  HWY_API void NAME(                                                    \
+      HWY_RVV_V(BASE, SEW, LMUL) a, HWY_RVV_V(BASE, SEW, LMUL) b,       \
+      HWY_RVV_V(BASE, SEW, LMUL) c, HWY_RVV_D(CHAR, SEW, LMUL) /* d */, \
+      HWY_RVV_T(BASE, SEW) * HWY_RESTRICT unaligned) {                  \
+    const v##BASE##SEW##m##LMUL##x3_t triple =                          \
+        vcreate_##CHAR##SEW##m##LMUL##x3(a, b, c);                      \
+    return v##OP##e8_v_##CHAR##SEW##m##LMUL##x3(unaligned, triple);     \
+  }
+// Segments are limited to 8 registers, so we can only go up to LMUL=2.
+HWY_RVV_STORE3(uint, u, 8, 1, 8, StoreInterleaved3, sseg3)
+HWY_RVV_STORE3(uint, u, 8, 2, 4, StoreInterleaved3, sseg3)
+
+#undef HWY_RVV_STORE3
+
+// ------------------------------ StoreInterleaved4
+
+#define HWY_RVV_STORE4(BASE, CHAR, SEW, LMUL, MLEN, NAME, OP)       \
+  HWY_API void NAME(                                                \
+      HWY_RVV_V(BASE, SEW, LMUL) v0, HWY_RVV_V(BASE, SEW, LMUL) v1, \
+      HWY_RVV_V(BASE, SEW, LMUL) v2, HWY_RVV_V(BASE, SEW, LMUL) v3, \
+      HWY_RVV_D(CHAR, SEW, LMUL) /* d */,                           \
+      HWY_RVV_T(BASE, SEW) * HWY_RESTRICT aligned) {                \
+    const v##BASE##SEW##m##LMUL##x4_t quad =                        \
+        vcreate_##CHAR##SEW##m##LMUL##x4(v0, v1, v2, v3);           \
+    return v##OP##e8_v_##CHAR##SEW##m##LMUL##x4(aligned, quad);     \
+  }
+// Segments are limited to 8 registers, so we can only go up to LMUL=2.
+HWY_RVV_STORE4(uint, u, 8, 1, 8, StoreInterleaved4, sseg4)
+HWY_RVV_STORE4(uint, u, 8, 2, 4, StoreInterleaved4, sseg4)
+
+#undef HWY_RVV_STORE4
 
 // ================================================== CONVERT
 
@@ -919,6 +993,16 @@ HWY_API Vi64m8 PromoteTo(Di64m8 /* d */, const Vi32m4 v) {
 }
 
 // ------------------------------ PromoteTo F
+
+HWY_API Vf32m2 PromoteTo(Df32m2 /* d */, const Vf16m1 v) {
+  return vfwcvt_f_f_v_f32m2(v);
+}
+HWY_API Vf32m4 PromoteTo(Df32m4 /* d */, const Vf16m2 v) {
+  return vfwcvt_f_f_v_f32m4(v);
+}
+HWY_API Vf32m8 PromoteTo(Df32m8 /* d */, const Vf16m4 v) {
+  return vfwcvt_f_f_v_f32m8(v);
+}
 
 HWY_API Vf64m2 PromoteTo(Df64m2 /* d */, const Vf32m1 v) {
   return vfwcvt_f_f_v_f64m2(v);
@@ -1008,6 +1092,16 @@ HWY_API Vi8m2 DemoteTo(Di8m2 d, const Vi32m8 v) {
 
 // ------------------------------ DemoteTo F
 
+HWY_API Vf16m1 DemoteTo(Df16m1 /* d */, const Vf32m2 v) {
+  return vfncvt_rod_f_f_w_f16m1(v);
+}
+HWY_API Vf16m2 DemoteTo(Df16m2 /* d */, const Vf32m4 v) {
+  return vfncvt_rod_f_f_w_f16m2(v);
+}
+HWY_API Vf16m4 DemoteTo(Df16m4 /* d */, const Vf32m8 v) {
+  return vfncvt_rod_f_f_w_f16m4(v);
+}
+
 HWY_API Vf32m1 DemoteTo(Df32m1 /* d */, const Vf64m2 v) {
   return vfncvt_rod_f_f_w_f32m1(v);
 }
@@ -1060,6 +1154,7 @@ HWY_RVV_FOREACH_F(HWY_RVV_CONVERT, _, _)
     return v##OP##_vm_##CHAR##SEW##m##LMUL(mask, v, v);          \
   }
 
+HWY_RVV_FOREACH_UI16(HWY_RVV_COMPRESS, Compress, compress)
 HWY_RVV_FOREACH_UI32(HWY_RVV_COMPRESS, Compress, compress)
 HWY_RVV_FOREACH_UI64(HWY_RVV_COMPRESS, Compress, compress)
 HWY_RVV_FOREACH_F(HWY_RVV_COMPRESS, Compress, compress)
@@ -1434,7 +1529,7 @@ template <class V>
 HWY_API V MinOfLanes(const V v) {
   using T = TFromV<V>;
   const Simd<T, HWY_LANES(T)> d1;  // always m1
-  const auto neutral = Set(d1, LimitsMax<T>());
+  const auto neutral = Set(d1, HighestValue<T>());
   return detail::RedMin(v, neutral);
 }
 
@@ -1451,7 +1546,7 @@ template <class V>
 HWY_API V MaxOfLanes(const V v) {
   using T = TFromV<V>;
   const Simd<T, HWY_LANES(T)> d1;  // always m1
-  const auto neutral = Set(d1, LimitsMin<T>());
+  const auto neutral = Set(d1, LowestValue<T>());
   return detail::RedMax(v, neutral);
 }
 
@@ -1479,6 +1574,8 @@ HWY_API VFromD<D> LoadDup128(D d, const TFromD<D>* const HWY_RESTRICT p) {
     const size_t num_bytes = (Lanes(d8) + MLEN - 1) / MLEN;     \
     /* TODO(janwas): how to convert vbool* to vuint?*/          \
     /*Store(m, d8, p);*/                                        \
+    (void)m;                                                    \
+    (void)p;                                                    \
     return num_bytes;                                           \
   }
 HWY_RVV_FOREACH_B(HWY_RVV_STORE_MASK_BITS, _, _)
@@ -1519,24 +1616,42 @@ HWY_API V AbsDiff(const V a, const V b) {
 
 // ------------------------------ Round
 
-// TODO(janwas): not yet in spec
+// IEEE-754 roundToIntegralTiesToEven returns floating-point, but we do not have
+// a dedicated instruction for that. Rounding to integer and converting back to
+// float is correct except when the input magnitude is large, in which case the
+// input was already an integer (because mantissa >> exponent is zero).
 
 namespace detail {
 enum RoundingModes { kNear, kTrunc, kDown, kUp };
+
+template <class V>
+HWY_API auto UseInt(const V v) -> decltype(MaskFromVec(v)) {
+  return Lt(Abs(v), Set(DFromV<V>(), MantissaEnd<TFromV<V>>()));
 }
+
+}  // namespace detail
 
 template <class V>
 HWY_API V Round(const V v) {
-  return ConvertTo(DFromV<V>(), NearestInt(v));
+  const DFromV<V> df;
+
+  const auto integer = NearestInt(v);  // round using current mode
+  const auto int_f = ConvertTo(df, integer);
+
+  return IfThenElse(detail::UseInt(v), CopySign(int_f, v), v);
 }
 
 // ------------------------------ Trunc
 
 template <class V>
 HWY_API V Trunc(const V v) {
-  using DF = DFromV<V>;
-  const RebindToSigned<DF> di;
-  return ConvertTo(DF(), ConvertTo(di, v));
+  const DFromV<V> df;
+  const RebindToSigned<decltype(df)> di;
+
+  const auto integer = ConvertTo(di, v);  // round toward 0
+  const auto int_f = ConvertTo(df, integer);
+
+  return IfThenElse(detail::UseInt(v), CopySign(int_f, v), v);
 }
 
 // ------------------------------ Ceil

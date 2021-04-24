@@ -28,34 +28,33 @@
 
 #if HWY_ARCH_X86
 #include <xmmintrin.h>
-#ifdef _MSC_VER
+#if HWY_COMPILER_MSVC
 #include <intrin.h>
-#else
+#else  // HWY_COMPILER_MSVC
 #include <cpuid.h>
-#endif
+#endif // HWY_COMPILER_MSVC
 #endif
 
 namespace hwy {
-
 namespace {
+
+#if HWY_ARCH_X86
 
 bool IsBitSet(const uint32_t reg, const int index) {
   return (reg & (1U << index)) != 0;
 }
 
-#if HWY_ARCH_X86
-
 // Calls CPUID instruction with eax=level and ecx=count and returns the result
 // in abcd array where abcd = {eax, ebx, ecx, edx} (hence the name abcd).
 void Cpuid(const uint32_t level, const uint32_t count,
            uint32_t* HWY_RESTRICT abcd) {
-#ifdef _MSC_VER
+#if HWY_COMPILER_MSVC
   int regs[4];
   __cpuidex(regs, level, count);
   for (int i = 0; i < 4; ++i) {
     abcd[i] = regs[i];
   }
-#else
+#else  // HWY_COMPILER_MSVC
   uint32_t a;
   uint32_t b;
   uint32_t c;
@@ -65,22 +64,22 @@ void Cpuid(const uint32_t level, const uint32_t count,
   abcd[1] = b;
   abcd[2] = c;
   abcd[3] = d;
-#endif
+#endif  // HWY_COMPILER_MSVC
 }
 
 // Returns the lower 32 bits of extended control register 0.
 // Requires CPU support for "OSXSAVE" (see below).
 uint32_t ReadXCR0() {
-#ifdef _MSC_VER
+#if HWY_COMPILER_MSVC
   return static_cast<uint32_t>(_xgetbv(0));
-#else
+#else  // HWY_COMPILER_MSVC
   uint32_t xcr0, xcr0_high;
   const uint32_t index = 0;
   asm volatile(".byte 0x0F, 0x01, 0xD0"
                : "=a"(xcr0), "=d"(xcr0_high)
                : "c"(index));
   return xcr0;
-#endif
+#endif  // HWY_COMPILER_MSVC
 }
 
 #endif  // HWY_ARCH_X86
@@ -147,9 +146,9 @@ HWY_NORETURN void HWY_FORMAT(3, 4)
   // break there.
   __sanitizer_print_stack_trace();
 #endif  // defined(*_SANITIZER)
+  fflush(stderr);
 
 #if HWY_COMPILER_MSVC
-  __debugbreak();
   abort();  // Compile error without this due to HWY_NORETURN.
 #else
   __builtin_trap();
@@ -157,7 +156,7 @@ HWY_NORETURN void HWY_FORMAT(3, 4)
 }
 
 void DisableTargets(uint32_t disabled_targets) {
-  supported_mask_ = ~(disabled_targets & ~HWY_ENABLED_BASELINE);
+  supported_mask_ = ~(disabled_targets & ~uint32_t(HWY_ENABLED_BASELINE));
   // We can call Update() here to initialize the mask but that will trigger a
   // call to SupportedTargets() which we use in tests to tell whether any of the
   // highway dynamic dispatch functions were used.
@@ -263,8 +262,8 @@ uint32_t SupportedTargets() {
 #endif  // HWY_ARCH_X86
 
   if ((bits & HWY_ENABLED_BASELINE) != HWY_ENABLED_BASELINE) {
-    fprintf(stderr, "WARNING: CPU supports %ux but software requires %x\n",
-            bits, HWY_ENABLED_BASELINE);
+    fprintf(stderr, "WARNING: CPU supports %zx but software requires %x\n",
+            size_t(bits), HWY_ENABLED_BASELINE);
   }
 
   supported_.store(bits, std::memory_order_release);

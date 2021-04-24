@@ -9,22 +9,26 @@ applying the same operation to 'lanes'.
 - works on a wider range of compilers than compiler-specific vector extensions,
 - more dependable than autovectorization,
 - easier to write/maintain than assembly language,
-- supports runtime dispatch,
-- designed for future variable-length vector architectures.
+- supports **runtime dispatch**,
+- supports **variable-length vector** architectures.
 
 ## Current status
 
 Supported targets: scalar, SSE4, AVX2, AVX-512, NEON (ARMv7 and v8), WASM SIMD.
 A port to RVV is in progress.
 
-Version 0.7 is considered stable enough to use in other projects, and is
+Version 0.11 is considered stable enough to use in other projects, and is
 expected to remain backwards compatible unless serious issues are discovered
 while implementing SVE/RVV targets. After these targets are added, Highway will
 reach version 1.0.
 
-Continuous integration tests use a recent version of Clang (9.0.1 should
-suffice) and older version of MSVC (VS2015). Also periodically tested on GCC
-10.2.0.
+Continuous integration tests build with a recent version of Clang (running on
+x86 and QEMU for ARM) and MSVC from VS2015 (running on x86). Also periodically
+tested on x86 with Clang 7-11 and GCC 8, 9 and 10.2.1.
+
+The `contrib` directory contains SIMD-related utilities: an image class with
+aligned rows, and a math library (16 functions already implemented, mostly
+trigonometry).
 
 ## Installation
 
@@ -52,6 +56,8 @@ cmake ..
 make -j && make test
 ```
 
+Or you can run `run_tests.sh` (`run_tests.bat` on Windows).
+
 To test on all the attainable targets for your platform, use
 `cmake .. -DCMAKE_CXX_FLAGS="-DHWY_COMPILE_ALL_ATTAINABLE"`. Otherwise, the
 default configuration skips baseline targets (e.g. scalar) that are superseded
@@ -59,7 +65,7 @@ by another baseline target.
 
 ## Quick start
 
-You can use the `skeleton` examples inside examples/ as a starting point.
+You can use the `benchmark` inside examples/ as a starting point.
 
 A [quick-reference page](g3doc/quick_reference.md) briefly lists all operations
 and their parameters, and the [instruction_matrix][instmtx] indicates the
@@ -88,8 +94,70 @@ additionally either prefixed with `HWY_ATTR`, or residing between
     `HWY_EXPORT` macro that is used by `HWY_DYNAMIC_DISPATCH(func)(args)` to
     call the best function pointer for the current CPU supported targets. A
     module is automatically compiled for each target in `HWY_TARGETS` (see
-    [quick-reference](g3doc/quick_reference.md)) if `HWY_TARGET_INCLUDE` is defined
-    and foreach_target.h is included.
+    [quick-reference](g3doc/quick_reference.md)) if `HWY_TARGET_INCLUDE` is
+    defined and foreach_target.h is included.
+
+## Strip-mining loops
+
+To vectorize a loop, "strip-mining" transforms it into an outer loop and inner
+loop with number of iterations matching the preferred vector width.
+
+In this section, let `T` denote the element type, `d = HWY_FULL(T)`, `count` the
+number of elements to process, and `N = Lanes(d)` the number of lanes in a full
+vector. Assume the loop body is given as a function `template<bool partial,
+class D> void LoopBody(D d, size_t max_n)`.
+
+Highway offers several ways to express loops where `N` need not divide `count`:
+
+*   Ensure all inputs/outputs are padded. Then the loop is simply
+
+    ```
+    for (size_t i = 0; i < count; i += N) LoopBody<false>(d, 0);
+    ```
+    Here, the template parameter and second function argument are not needed.
+
+    This is the preferred option, unless `N` is in the thousands and vector
+    operations are pipelined with long latencies. This was the case for
+    supercomputers in the 90s, but nowadays ALUs are cheap and we see most
+    implementations split vectors into 1, 2 or 4 parts, so there is little cost
+    to processing entire vectors even if we do not need all their lanes. Indeed
+    this avoids the (potentially large) cost of predication or partial
+    loads/stores on older targets, and does not duplicate code.
+
+*   Process whole vectors as above, followed by a scalar loop:
+
+    ```
+    size_t i = 0;
+    for (; i + N <= count; i += N) LoopBody<false>(d, 0);
+    for (; i < count; ++i) LoopBody<false>(HWY_CAPPED(T, 1)(), 0);
+    ```
+    The template parameter and second function arguments are again not needed.
+
+    This avoids duplicating code, and is reasonable if `count` is large.
+    Otherwise, multiple iterations may be slower than one `LoopBody` variant
+    with masking, especially because the `HWY_SCALAR` target selected by
+    `HWY_CAPPED(T, 1)` is slower for some operations due to workarounds for
+    undefined behavior in C++.
+
+*   Process whole vectors as above, followed by a single call to a modified
+    `LoopBody` with masking:
+
+    ```
+    size_t i = 0;
+    for (; i + N <= count; i += N) {
+      LoopBody<false>(d, 0);
+    }
+    if (i < count) {
+      LoopBody<true>(d, count - i);
+    }
+    ```
+    Now the template parameter and second function argument can be used inside
+    `LoopBody` to replace `Load/Store` of full aligned vectors with
+    `LoadN/StoreN(n)` that affect no more than `1 <= n <= N` aligned elements
+    (pending implementation).
+
+    This is a good default when it is infeasible to ensure vectors are padded.
+    In contrast to the scalar loop, only a single final iteration is needed.
 
 ## Design philosophy
 

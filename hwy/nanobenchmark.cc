@@ -34,11 +34,11 @@
 #include <sys/platform/ppc.h>  // NOLINT __ppc_get_timebase_freq
 #elif HWY_ARCH_X86
 
-#ifdef _MSC_VER
+#if HWY_COMPILER_MSVC
 #include <intrin.h>
 #else
 #include <cpuid.h>  // NOLINT
-#endif              // _MSC_VER
+#endif              // HWY_COMPILER_MSVC
 
 #endif  // HWY_ARCH_X86
 
@@ -79,8 +79,8 @@ std::string BrandString() {
     return std::string();
   }
 
-  for (int i = 0; i < 3; ++i) {
-    Cpuid(0x80000002U + i, 0, abcd.data());
+  for (size_t i = 0; i < 3; ++i) {
+    Cpuid(static_cast<uint32_t>(0x80000002U + i), 0, abcd.data());
     memcpy(brand_string + i * 16, abcd.data(), sizeof(abcd));
   }
   brand_string[48] = 0;
@@ -600,7 +600,8 @@ InputVec ReplicateInputs(const FuncInput* inputs, const size_t num_inputs,
 // randomly selected occurrences of "input_to_skip" removed.
 void FillSubset(const InputVec& full, const FuncInput input_to_skip,
                 const size_t num_skip, InputVec* subset) {
-  const size_t count = std::count(full.begin(), full.end(), input_to_skip);
+  const size_t count =
+      static_cast<size_t>(std::count(full.begin(), full.end(), input_to_skip));
   // Generate num_skip random indices: which occurrence to skip.
   std::vector<uint32_t> omit(count);
   std::iota(omit.begin(), omit.end(), 0);
@@ -668,6 +669,8 @@ Ticks Overhead(const uint8_t* arg, const InputVec* inputs, const Params& p) {
 
 }  // namespace
 
+int Unpredictable1() { return timer::Start64() != ~0ULL; }
+
 size_t Measure(const Func func, const uint8_t* arg, const FuncInput* inputs,
                const size_t num_inputs, Result* results, const Params& p) {
   NANOBENCHMARK_CHECK(num_inputs != 0);
@@ -675,7 +678,8 @@ size_t Measure(const Func func, const uint8_t* arg, const FuncInput* inputs,
 
   const size_t num_skip = NumSkip(func, arg, unique, p);  // never 0
   if (num_skip == 0) return 0;  // NumSkip already printed error message
-  const float mul = 1.0f / static_cast<int>(num_skip);
+  // (slightly less work on x86 to cast from signed integer)
+  const float mul = 1.0f / static_cast<float>(static_cast<int>(num_skip));
 
   const InputVec& full =
       ReplicateInputs(inputs, num_inputs, unique.size(), num_skip, p);
@@ -708,7 +712,7 @@ size_t Measure(const Func func, const uint8_t* arg, const FuncInput* inputs,
 
     const Ticks duration = (total - overhead) - (total_skip - overhead_skip);
     results[i].input = unique[i];
-    results[i].ticks = duration * mul;
+    results[i].ticks = static_cast<float>(duration) * mul;
     results[i].variability = static_cast<float>(max_rel_mad);
   }
 

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <cfloat>  // FLT_MAX
-#include <cmath>
 #include <iostream>
 #include <type_traits>
 
@@ -52,7 +51,12 @@ void TestMath(const std::string name, T (*fx1)(T), Vec<D> (*fxN)(D, Vec<D>),
   }
 
   uint64_t max_ulp = 0;
+#if HWY_ARCH_ARM
+  // Emulation is slower, so cannot afford as many.
+  constexpr UintT kSamplesPerRange = 25000;
+#else
   constexpr UintT kSamplesPerRange = 100000;
+#endif
   for (int range_index = 0; range_index < range_count; ++range_index) {
     const UintT start = ranges[range_index][0];
     const UintT stop = ranges[range_index][1];
@@ -63,7 +67,7 @@ void TestMath(const std::string name, T (*fx1)(T), Vec<D> (*fxN)(D, Vec<D>),
       const T expected = fx1(value);
 
       // Skip small inputs and outputs on armv7, it flushes subnormals to zero.
-#if (HWY_TARGET == HWY_NEON) && !defined(__aarch64__)
+#if HWY_TARGET == HWY_NEON && HWY_ARCH_ARM_V7
       if ((std::abs(value) < 1e-37f) || (std::abs(expected) < 1e-37f)) {
         continue;
       }
@@ -71,9 +75,12 @@ void TestMath(const std::string name, T (*fx1)(T), Vec<D> (*fxN)(D, Vec<D>),
 
       const auto ulp = ComputeUlpDelta(actual, expected);
       max_ulp = std::max<uint64_t>(max_ulp, ulp);
+      if (ulp > max_error_ulp) {
+        std::cout << name << "<" << (kIsF32 ? "F32x" : "F64x") << Lanes(d)
+                  << ">(" << value << ") expected: " << expected
+                  << " actual: " << actual << std::endl;
+      }
       HWY_ASSERT(ulp <= max_error_ulp);
-      // << name << "<" << (kIsF32 ? "F32x" : "F64x") << Lanes(d) << ">("
-      // << value << ") expected: " << expected << " actual: " << actual;
     }
   }
   std::cout << (kIsF32 ? "F32x" : "F64x") << Lanes(d)
@@ -104,47 +111,53 @@ const double kNearOneD = BitCast<double>(0x3FEFFFFFFFFFFFFFULL);
 
 // clang-format off
 DEFINE_MATH_TEST(Acos,
-  std::acos,  Acos,  -1.0,       +1.0,        3,  // NEON is 3 instead of 2
-  std::acos,  Acos,  -1.0,       +1.0,        2)
+  std::acos,  CallAcos,  -1.0,       +1.0,        3,  // NEON is 3 instead of 2
+  std::acos,  CallAcos,  -1.0,       +1.0,        2)
 DEFINE_MATH_TEST(Acosh,
-  std::acosh, Acosh, +1.0,       +FLT_MAX,    3,
-  std::acosh, Acosh, +1.0,       +DBL_MAX,    3)
+  std::acosh, CallAcosh, +1.0,       +FLT_MAX,    3,
+  std::acosh, CallAcosh, +1.0,       +DBL_MAX,    3)
 DEFINE_MATH_TEST(Asin,
-  std::asin,  Asin,  -1.0,       +1.0,        3,  // NEON is 3 instead of 2
-  std::asin,  Asin,  -1.0,       +1.0,        2)
+  std::asin,  CallAsin,  -1.0,       +1.0,        3,  // NEON is 3 instead of 2
+  std::asin,  CallAsin,  -1.0,       +1.0,        2)
 DEFINE_MATH_TEST(Asinh,
-  std::asinh, Asinh, -FLT_MAX,   +FLT_MAX,    3,
-  std::asinh, Asinh, -DBL_MAX,   +DBL_MAX,    3)
+  std::asinh, CallAsinh, -FLT_MAX,   +FLT_MAX,    3,
+  std::asinh, CallAsinh, -DBL_MAX,   +DBL_MAX,    3)
 DEFINE_MATH_TEST(Atan,
-  std::atan,  Atan,  -FLT_MAX,   +FLT_MAX,    3,
-  std::atan,  Atan,  -DBL_MAX,   +DBL_MAX,    3)
+  std::atan,  CallAtan,  -FLT_MAX,   +FLT_MAX,    3,
+  std::atan,  CallAtan,  -DBL_MAX,   +DBL_MAX,    3)
 DEFINE_MATH_TEST(Atanh,
-  std::atanh, Atanh, -kNearOneF, +kNearOneF,  4,  // NEON is 4 instead of 3
-  std::atanh, Atanh, -kNearOneD, +kNearOneD,  3)
+  std::atanh, CallAtanh, -kNearOneF, +kNearOneF,  4,  // NEON is 4 instead of 3
+  std::atanh, CallAtanh, -kNearOneD, +kNearOneD,  3)
+DEFINE_MATH_TEST(Cos,
+  std::cos,   CallCos,   -39000.0,   +39000.0,    3,
+  std::cos,   CallCos,   -39000.0,   +39000.0,    3)
 DEFINE_MATH_TEST(Exp,
-  std::exp,   Exp,   -FLT_MAX,   +104.0f,     1,
-  std::exp,   Exp,   -DBL_MAX,   +104.0f,     1)
+  std::exp,   CallExp,   -FLT_MAX,   +104.0,      1,
+  std::exp,   CallExp,   -DBL_MAX,   +104.0,      1)
 DEFINE_MATH_TEST(Expm1,
-  std::expm1, Expm1, -FLT_MAX,   +104.0f,     4,
-  std::expm1, Expm1, -DBL_MAX,   +104.0f,     4)
+  std::expm1, CallExpm1, -FLT_MAX,   +104.0,      4,
+  std::expm1, CallExpm1, -DBL_MAX,   +104.0,      4)
 DEFINE_MATH_TEST(Log,
-  std::log,   Log,   +FLT_MIN,   +FLT_MAX,    1,
-  std::log,   Log,   +DBL_MIN,   +DBL_MAX,    1)
+  std::log,   CallLog,   +FLT_MIN,   +FLT_MAX,    1,
+  std::log,   CallLog,   +DBL_MIN,   +DBL_MAX,    1)
 DEFINE_MATH_TEST(Log10,
-  std::log10, Log10, +FLT_MIN,   +FLT_MAX,    2,
-  std::log10, Log10, +DBL_MIN,   +DBL_MAX,    2)
+  std::log10, CallLog10, +FLT_MIN,   +FLT_MAX,    2,
+  std::log10, CallLog10, +DBL_MIN,   +DBL_MAX,    2)
 DEFINE_MATH_TEST(Log1p,
-  std::log1p, Log1p, +0.0f,      +1e37,       3,  // NEON is 3 instead of 2
-  std::log1p, Log1p, +0.0,       +DBL_MAX,    2)
+  std::log1p, CallLog1p, +0.0f,      +1e37,       3,  // NEON is 3 instead of 2
+  std::log1p, CallLog1p, +0.0,       +DBL_MAX,    2)
 DEFINE_MATH_TEST(Log2,
-  std::log2,  Log2,  +FLT_MIN,   +FLT_MAX,    2,
-  std::log2,  Log2,  +DBL_MIN,   +DBL_MAX,    2)
+  std::log2,  CallLog2,  +FLT_MIN,   +FLT_MAX,    2,
+  std::log2,  CallLog2,  +DBL_MIN,   +DBL_MAX,    2)
+DEFINE_MATH_TEST(Sin,
+  std::sin,   CallSin,   -39000.0,   +39000.0,    3,
+  std::sin,   CallSin,   -39000.0,   +39000.0,    3)
 DEFINE_MATH_TEST(Sinh,
-  std::sinh,  Sinh,  -80.0f,     +80.0f,      4,
-  std::sinh,  Sinh,  -709.0,     +709.0,      4)
+  std::sinh,  CallSinh,  -80.0f,     +80.0f,      4,
+  std::sinh,  CallSinh,  -709.0,     +709.0,      4)
 DEFINE_MATH_TEST(Tanh,
-  std::tanh,  Tanh,  -FLT_MAX,   +FLT_MAX,    4,
-  std::tanh,  Tanh,  -DBL_MAX,   +DBL_MAX,    4)
+  std::tanh,  CallTanh,  -FLT_MAX,   +FLT_MAX,    4,
+  std::tanh,  CallTanh,  -DBL_MAX,   +DBL_MAX,    4)
 // clang-format on
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
@@ -153,6 +166,7 @@ DEFINE_MATH_TEST(Tanh,
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
+namespace hwy {
 HWY_BEFORE_TEST(HwyMathTest);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAcos);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAcosh);
@@ -160,13 +174,15 @@ HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAsin);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAsinh);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAtan);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllAtanh);
+HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllCos);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllExp);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllExpm1);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllLog);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllLog10);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllLog1p);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllLog2);
+HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllSin);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllSinh);
 HWY_EXPORT_AND_TEST_P(HwyMathTest, TestAllTanh);
-HWY_AFTER_TEST();
+}  // namespace hwy
 #endif

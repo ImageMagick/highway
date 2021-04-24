@@ -19,7 +19,6 @@
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "tests/swizzle_test.cc"
 #include "hwy/foreach_target.h"
-
 #include "hwy/highway.h"
 #include "hwy/tests/test_util-inl.h"
 
@@ -234,7 +233,6 @@ struct TestTableLookupLanes {
   template <class T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
 #if HWY_TARGET != HWY_SCALAR
-
     const size_t N = Lanes(d);
     auto idx = AllocateAligned<Index>(N);
     std::fill(idx.get(), idx.get() + N, Index(0));
@@ -271,16 +269,18 @@ struct TestTableLookupLanes {
       for (size_t i = 0; i < N; ++i) {
         idx[i] = (i < 16) ? idx_source[i] : 0;
         // Avoid undefined results / asan error for scalar by capping indices.
-        if (idx[i] >= N) {
+        if (idx[i] >= static_cast<Index>(N)) {
           idx[i] = static_cast<Index>(N - 1);
         }
-        expected[i] = idx[i] + 1;  // == v[idx[i]]
+        expected[i] = static_cast<T>(idx[i] + 1);  // == v[idx[i]]
       }
 
       const auto opaque = SetTableIndices(d, idx.get());
       const auto actual = TableLookupLanes(v, opaque);
       HWY_ASSERT_VEC_EQ(d, expected.get(), actual);
     }
+#else
+    (void)d;
 #endif
   }
 };
@@ -295,6 +295,7 @@ HWY_NOINLINE void TestAllTableLookupLanes() {
 struct TestInterleave {
   template <class T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
+    using TU = MakeUnsigned<T>;
     const size_t N = Lanes(d);
     auto even_lanes = AllocateAligned<T>(N);
     auto odd_lanes = AllocateAligned<T>(N);
@@ -306,11 +307,11 @@ struct TestInterleave {
     const auto even = Load(d, even_lanes.get());
     const auto odd = Load(d, odd_lanes.get());
 
-
     const size_t blockN = 16 / sizeof(T);
     for (size_t i = 0; i < Lanes(d); ++i) {
       const size_t block = i / blockN;
-      expected[i] = (i % blockN) + block * 2 * blockN;
+      const size_t index = (i % blockN) + block * 2 * blockN;
+      expected[i] = static_cast<T>(index & LimitsMax<TU>());
     }
     HWY_ASSERT_VEC_EQ(d, expected.get(), InterleaveLower(even, odd));
 
@@ -547,6 +548,8 @@ struct TestConcatHalves {
 
     HWY_ASSERT_VEC_EQ(d, expected,
                       ConcatUpperUpper(Load(d, hi.get()), Load(d, lo.get())));
+#else
+    (void)d;
 #endif
   }
 };
@@ -565,6 +568,8 @@ struct TestConcatLowerUpper {
     const auto lo = Iota(d, 1);
     const auto hi = Iota(d, 1 + N);
     HWY_ASSERT_VEC_EQ(d, Iota(d, 1 + N / 2), ConcatLowerUpper(hi, lo));
+#else
+    (void)d;
 #endif
   }
 };
@@ -619,6 +624,7 @@ HWY_NOINLINE void TestAllOddEven() {
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
+namespace hwy {
 HWY_BEFORE_TEST(HwySwizzleTest);
 HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllShiftBytes);
 HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllShiftLanes);
@@ -632,5 +638,5 @@ HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllConcatHalves);
 HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllConcatLowerUpper);
 HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllConcatUpperLower);
 HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllOddEven);
-HWY_AFTER_TEST();
+}  // namespace hwy
 #endif

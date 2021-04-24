@@ -16,8 +16,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#include <cmath>
-
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "tests/convert_test.cc"
 #include "hwy/foreach_target.h"
@@ -214,6 +212,7 @@ template <typename ToT>
 struct TestDemoteTo {
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D from_d) {
+    static_assert(!IsFloat<ToT>(), "Use TestDemoteToFloat for float output");
     static_assert(sizeof(T) > sizeof(ToT), "Input type must be wider");
     const Rebind<ToT, D> to_d;
 
@@ -241,7 +240,7 @@ struct TestDemoteTo {
   }
 };
 
-HWY_NOINLINE void TestAllDemoteTo() {
+HWY_NOINLINE void TestAllDemoteToInt() {
   ForDemoteVectors<TestDemoteTo<uint8_t>, 2>()(int16_t());
   ForDemoteVectors<TestDemoteTo<uint8_t>, 4>()(int32_t());
 
@@ -253,17 +252,108 @@ HWY_NOINLINE void TestAllDemoteTo() {
 
   const ForDemoteVectors<TestDemoteTo<int16_t>, 2> to_i16;
   to_i16(int32_t());
+}
 
-  // Must test f16 separately because we can only load/store/convert them.
-
+HWY_NOINLINE void TestAllDemoteToMixed() {
 #if HWY_CAP_FLOAT64
-  const ForDemoteVectors<TestDemoteTo<float>, 2> to_float;
-  to_float(double());
-
   const ForDemoteVectors<TestDemoteTo<int32_t>, 2> to_i32;
   to_i32(double());
 #endif
 }
+
+template <typename ToT>
+struct TestDemoteToFloat {
+  template <typename T, class D>
+  HWY_NOINLINE void operator()(T /*unused*/, D from_d) {
+    // For floats, we clamp differently and cannot call LimitsMin.
+    static_assert(IsFloat<ToT>(), "Use TestDemoteTo for integer output");
+    static_assert(sizeof(T) > sizeof(ToT), "Input type must be wider");
+    const Rebind<ToT, D> to_d;
+
+    const size_t N = Lanes(from_d);
+    auto from = AllocateAligned<T>(N);
+    auto expected = AllocateAligned<ToT>(N);
+
+    RandomState rng;
+    for (size_t rep = 0; rep < 1000; ++rep) {
+      for (size_t i = 0; i < N; ++i) {
+        do {
+          const uint64_t bits = rng();
+          memcpy(&from[i], &bits, sizeof(T));
+        } while (!IsFinite(from[i]));
+        const T magn = std::abs(from[i]);
+        const T max_abs = HighestValue<ToT>();
+        // NOTE: std:: version from C++11 cmath is not defined in RVV GCC, see
+        // https://lists.freebsd.org/pipermail/freebsd-current/2014-January/048130.html
+        const T clipped = copysign(std::min(magn, max_abs), from[i]);
+        expected[i] = static_cast<ToT>(clipped);
+      }
+
+      HWY_ASSERT_VEC_EQ(to_d, expected.get(),
+                        DemoteTo(to_d, Load(from_d, from.get())));
+    }
+  }
+};
+
+HWY_NOINLINE void TestAllDemoteToFloat() {
+  // Must test f16 separately because we can only load/store/convert them.
+
+#if HWY_CAP_FLOAT64
+  const ForDemoteVectors<TestDemoteToFloat<float>, 2> to_float;
+  to_float(double());
+#endif
+}
+
+template <class D>
+AlignedFreeUniquePtr<float[]> F16TestCases(D d, size_t& padded) {
+  const float test_cases[] = {
+      // +/- 1
+      1.0f, -1.0f,
+      // +/- 0
+      0.0f, -0.0f,
+      // near 0
+      0.25f, -0.25f,
+      // +/- integer
+      4.0f, -32.0f,
+      // positive near limit
+      65472.0f, 65504.0f,
+      // negative near limit
+      -65472.0f, -65504.0f,
+      // positive +/- delta
+      2.00390625f, 3.99609375f,
+      // negative +/- delta
+      -2.00390625f, -3.99609375f,
+      // No infinity/NaN - implementation-defined due to ARM.
+  };
+  const size_t kNumTestCases = sizeof(test_cases) / sizeof(test_cases[0]);
+  const size_t N = Lanes(d);
+  padded = RoundUpTo(kNumTestCases, N);  // allow loading whole vectors
+  auto in = AllocateAligned<float>(padded);
+  auto expected = AllocateAligned<float>(padded);
+  std::copy(test_cases, test_cases + kNumTestCases, in.get());
+  std::fill(in.get() + kNumTestCases, in.get() + padded, 0.0f);
+  return in;
+}
+
+struct TestF16 {
+  template <typename TF32, class DF32>
+  HWY_NOINLINE void operator()(TF32 /*t*/, DF32 d32) {
+    size_t padded;
+    auto in = F16TestCases(d32, padded);
+    using TF16 = float16_t;
+    const Rebind<TF16, DF32> d16;
+    const size_t N = Lanes(d32);  // same count for f16
+    auto temp16 = AllocateAligned<TF16>(N);
+
+    for (size_t i = 0; i < padded; i += N) {
+      const auto loaded = Load(d32, &in[i]);
+      Store(DemoteTo(d16, loaded), d16, temp16.get());
+      HWY_ASSERT_VEC_EQ(d32, loaded, PromoteTo(d32, Load(d16, temp16.get())));
+    }
+  }
+};
+
+HWY_NOINLINE void TestAllF16() { ForDemoteVectors<TestF16, 2>()(float()); }
 
 struct TestConvertU8 {
   template <typename T, class D>
@@ -291,13 +381,16 @@ struct TestIntFromFloatHuge {
     using TI = MakeSigned<TF>;
     const Rebind<TI, DF> di;
 
-    // Huge positive
-    HWY_ASSERT_VEC_EQ(di, Set(di, LimitsMax<TI>()),
-                      ConvertTo(di, Set(df, TF(1E20))));
+    // Huge positive (lvalue works around GCC bug, tested with 10.2.1, where
+    // the expected i32 value is otherwise 0x80..00).
+    const auto expected_max = Set(di, LimitsMax<TI>());
+    HWY_ASSERT_VEC_EQ(di, expected_max, ConvertTo(di, Set(df, TF(1E20))));
 
-    // Huge negative
-    HWY_ASSERT_VEC_EQ(di, Set(di, LimitsMin<TI>()),
-                      ConvertTo(di, Set(df, TF(-1E20))));
+    // Huge negative (also lvalue for safety, but GCC bug was not triggered)
+    const auto expected_min = Set(di, LimitsMin<TI>());
+    HWY_ASSERT_VEC_EQ(di, expected_min, ConvertTo(di, Set(df, TF(-1E20))));
+#else
+    (void)df;
 #endif
   }
 };
@@ -452,37 +545,6 @@ HWY_NOINLINE void TestAllI32F64() {
 #endif
 }
 
-struct TestNearestInt {
-  template <typename TI, class DI>
-  HWY_NOINLINE void operator()(TI /*unused*/, const DI di) {
-    using TF = MakeFloat<TI>;
-    const Rebind<TF, DI> df;
-    const size_t N = Lanes(df);
-
-    // Integer positive
-    HWY_ASSERT_VEC_EQ(di, Iota(di, 4), NearestInt(Iota(df, 4.0f)));
-
-    // Integer negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, -32), NearestInt(Iota(df, -32.0f)));
-
-    // Above positive
-    HWY_ASSERT_VEC_EQ(di, Iota(di, 2), NearestInt(Iota(df, 2.001f)));
-
-    // Below positive
-    HWY_ASSERT_VEC_EQ(di, Iota(di, 4), NearestInt(Iota(df, 3.9999f)));
-
-    const TF eps = static_cast<TF>(0.0001);
-    // Above negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, -TI(N)), NearestInt(Iota(df, -TF(N) + eps)));
-
-    // Below negative
-    HWY_ASSERT_VEC_EQ(di, Iota(di, -TI(N)), NearestInt(Iota(df, -TF(N) - eps)));
-  }
-};
-
-HWY_NOINLINE void TestAllNearestInt() {
-  ForPartialVectors<TestNearestInt>()(int32_t());
-}
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
@@ -490,14 +552,17 @@ HWY_NOINLINE void TestAllNearestInt() {
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
+namespace hwy {
 HWY_BEFORE_TEST(HwyConvertTest);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllBitCast);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllPromoteTo);
-HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllDemoteTo);
+HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllDemoteToInt);
+HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllDemoteToMixed);
+HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllDemoteToFloat);
+HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllF16);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllConvertU8);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllIntFromFloat);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllFloatFromInt);
 HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllI32F64);
-HWY_EXPORT_AND_TEST_P(HwyConvertTest, TestAllNearestInt);
-HWY_AFTER_TEST();
+}  // namespace hwy
 #endif

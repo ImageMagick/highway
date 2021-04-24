@@ -20,13 +20,14 @@
 
 // Main header required before using vector types.
 
+#include "hwy/base.h"
 #include "hwy/targets.h"
 
 namespace hwy {
 
 // API version (https://semver.org/)
 #define HWY_MAJOR 0
-#define HWY_MINOR 11
+#define HWY_MINOR 12
 #define HWY_PATCH 0
 
 //------------------------------------------------------------------------------
@@ -314,9 +315,18 @@ HWY_API V CombineShiftRightLanes(const V hi, const V lo) {
 // Returns lanes with the most significant bit set and all other bits zero.
 template <class D>
 HWY_API Vec<D> SignBit(D d) {
-  using Unsigned = MakeUnsigned<typename D::T>;
+  using Unsigned = MakeUnsigned<TFromD<D>>;
   const Unsigned bit = Unsigned(1) << (sizeof(Unsigned) * 8 - 1);
   return BitCast(d, Set(Rebind<Unsigned, D>(), bit));
+}
+
+// Returns quiet NaN.
+template <class D>
+HWY_API Vec<D> NaN(D d) {
+  const RebindToSigned<D> di;
+  // LimitsMax sets all exponent and mantissa bits to 1. The exponent plus
+  // mantissa MSB (to indicate quiet) would be sufficient.
+  return BitCast(d, Set(di, LimitsMax<TFromD<decltype(di)>>()));
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

@@ -45,7 +45,7 @@ HWY_NOINLINE void OneFloorLog2(const DF df, const uint8_t* HWY_RESTRICT values,
 
   const auto u8 = Load(d8, values);
   const auto bits = BitCast(d32, ConvertTo(df, PromoteTo(d32, u8)));
-  const auto exponent = ShiftRight<23>(bits) - Set(d32, 127);
+  const auto exponent = Sub(ShiftRight<23>(bits), Set(d32, 127));
   Store(DemoteTo(d8, exponent), d8, log2);
 }
 
@@ -67,12 +67,17 @@ HWY_NOINLINE void FloorLog2(const uint8_t* HWY_RESTRICT values, size_t count,
   // Second argument is necessary on RVV until it supports fractional lengths.
   HWY_FULL(float, 4) df;
 
-  // Caller padded memory to a multiple of Lanes(). If that is not possible,
-  // we could use blended or masked stores, see README.md.
   const size_t N = Lanes(df);
-  for (size_t i = 0; i < count; i += N) {
+  size_t i = 0;
+  for (; i + N <= count; i += N) {
     OneFloorLog2(df, values + i, log2 + i);
   }
+  // TODO(janwas): implement
+#if HWY_TARGET != HWY_RVV
+  for (; i < count; ++i) {
+    OneFloorLog2(HWY_CAPPED(float, 1)(), values + i, log2 + i);
+  }
+#endif
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

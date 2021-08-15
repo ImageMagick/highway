@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Ensure incompabilities with Windows macros (e.g. #define StoreFence) are
+// detected. Must come before Highway headers.
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -199,13 +205,14 @@ struct TestLoadDup128 {
     for (size_t i = 0; i < N128; ++i) {
       lanes[i] = static_cast<T>(1 + i);
     }
-    const auto v = LoadDup128(d, lanes);
+
     const size_t N = Lanes(d);
-    auto out = AllocateAligned<T>(N);
-    Store(v, d, out.get());
+    auto expected = AllocateAligned<T>(N);
     for (size_t i = 0; i < N; ++i) {
-      HWY_ASSERT_EQ(T(i % N128 + 1), out[i]);
+      expected[i] = static_cast<T>(i % N128 + 1);
     }
+
+    HWY_ASSERT_VEC_EQ(d, expected.get(), LoadDup128(d, lanes));
 #else
     (void)d;
 #endif
@@ -280,8 +287,8 @@ struct TestScatter {
       std::fill(expected.get(), expected.get() + range, T(0));
       std::fill(actual.get(), actual.get() + range, T(0));
       for (size_t i = 0; i < N; ++i) {
-        offsets[i] =
-            static_cast<Offset>(Random32(&rng) % (max_bytes - sizeof(T)));
+        // Must be aligned
+        offsets[i] = static_cast<Offset>((Random32(&rng) % range) * sizeof(T));
         CopyBytes<sizeof(T)>(
             bytes.get() + i * sizeof(T),
             reinterpret_cast<uint8_t*>(expected.get()) + offsets[i]);
@@ -333,11 +340,12 @@ struct TestGather {
     using Offset = MakeSigned<T>;
 
     const size_t N = Lanes(d);
+    const size_t range = 4 * N;                  // number of items to gather
+    const size_t max_bytes = range * sizeof(T);  // upper bound on offset
 
     RandomState rng;
 
     // Data to be gathered from
-    const size_t max_bytes = 4 * N * sizeof(T);  // upper bound on offset
     auto bytes = AllocateAligned<uint8_t>(max_bytes);
     for (size_t i = 0; i < max_bytes; ++i) {
       bytes[i] = static_cast<uint8_t>(Random32(&rng) & 0xFF);
@@ -350,8 +358,8 @@ struct TestGather {
     for (size_t rep = 0; rep < 100; ++rep) {
       // Offsets
       for (size_t i = 0; i < N; ++i) {
-        offsets[i] =
-            static_cast<Offset>(Random32(&rng) % (max_bytes - sizeof(T)));
+        // Must be aligned
+        offsets[i] = static_cast<Offset>((Random32(&rng) % range) * sizeof(T));
         CopyBytes<sizeof(T)>(bytes.get() + offsets[i], &expected[i]);
       }
 
@@ -391,6 +399,7 @@ HWY_NOINLINE void TestAllCache() {
   int test = 0;
   Prefetch(&test);
   FlushCacheline(&test);
+  Pause();
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
@@ -399,6 +408,7 @@ HWY_NOINLINE void TestAllCache() {
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
+
 namespace hwy {
 HWY_BEFORE_TEST(HwyMemoryTest);
 HWY_EXPORT_AND_TEST_P(HwyMemoryTest, TestAllLoadStore);
@@ -410,4 +420,11 @@ HWY_EXPORT_AND_TEST_P(HwyMemoryTest, TestAllScatter);
 HWY_EXPORT_AND_TEST_P(HwyMemoryTest, TestAllGather);
 HWY_EXPORT_AND_TEST_P(HwyMemoryTest, TestAllCache);
 }  // namespace hwy
+
+// Ought not to be necessary, but without this, no tests run on RVV.
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}
+
 #endif

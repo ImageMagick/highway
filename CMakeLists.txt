@@ -19,7 +19,7 @@ if(POLICY CMP0083)
   cmake_policy(SET CMP0083 NEW)
 endif()
 
-project(hwy VERSION 0.1)
+project(hwy VERSION 0.14.0)  # Keep in sync with highway.h version
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -40,6 +40,8 @@ if (NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
+set(HWY_CMAKE_ARM7 OFF CACHE BOOL "Set copts for ARMv7 with NEON?")
+
 include(CheckCXXSourceCompiles)
 check_cxx_source_compiles(
    "int main() {
@@ -51,19 +53,26 @@ check_cxx_source_compiles(
   HWY_EMSCRIPTEN
 )
 
+set(HWY_CONTRIB_SOURCES
+    hwy/contrib/image/image.cc
+    hwy/contrib/image/image.h
+    hwy/contrib/math/math-inl.h
+)
+
 set(HWY_SOURCES
-    contrib/image/image.cc
-    contrib/image/image.h
-    contrib/math/math-inl.h
     hwy/aligned_allocator.cc
     hwy/aligned_allocator.h
     hwy/base.h
     hwy/cache_control.h
+    hwy/detect_compiler_arch.h  # private
+    hwy/detect_targets.h  # private
     hwy/foreach_target.h
     hwy/highway.h
     hwy/nanobenchmark.cc
     hwy/nanobenchmark.h
     hwy/ops/arm_neon-inl.h
+    hwy/ops/arm_sve-inl.h
+    hwy/ops/generic_ops-inl.h
     hwy/ops/scalar-inl.h
     hwy/ops/set_macros-inl.h
     hwy/ops/shared-inl.h
@@ -101,7 +110,6 @@ else()
 
   if(${CMAKE_CXX_COMPILER_ID} MATCHES "Clang")
     list(APPEND HWY_FLAGS
-      -Wc++2a-extensions
       -Wfloat-overflow-conversion
       -Wfloat-zero-conversion
       -Wfor-loop-analysis
@@ -120,6 +128,9 @@ else()
       # Use color in messages
       -fdiagnostics-show-option -fcolor-diagnostics
     )
+    if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 6.0)
+      list(APPEND HWY_FLAGS -Wc++2a-extensions)
+    endif()
   endif()
 
   if (WIN32)
@@ -146,33 +157,27 @@ else()
       -fno-exceptions
     )
   endif()
-endif()
+
+  if (HWY_CMAKE_ARM7)
+    list(APPEND HWY_FLAGS
+      -march=armv7-a
+      -mfpu=neon-vfpv4
+      -mfloat-abi=hard  # must match the toolchain specified as CXX=
+      -mfp16-format=ieee  # required for vcvt_f32_f16
+    )
+  endif()  # HWY_CMAKE_ARM7
+
+endif()  # !MSVC
 
 add_library(hwy STATIC ${HWY_SOURCES})
 target_compile_options(hwy PRIVATE ${HWY_FLAGS})
 set_property(TARGET hwy PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(hwy PUBLIC ${CMAKE_CURRENT_LIST_DIR})
 
-# -------------------------------------------------------- install library
-install(TARGETS hwy
-  DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-# Install all the headers keeping the relative path to the current directory
-# when installing them.
-foreach (source ${HWY_SOURCES})
-  if ("${source}" MATCHES "\.h$")
-    get_filename_component(dirname "${source}" DIRECTORY)
-    install(FILES "${source}"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/${dirname}")
-  endif()
-endforeach()
-
-# Add a pkg-config file for libhwy and the test library.
-set(HWY_LIBRARY_VERSION "${CMAKE_PROJECT_VERSION}")
-foreach (pc libhwy.pc libhwy-test.pc)
-  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/${pc}.in" "${pc}" @ONLY)
-  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${pc}"
-      DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
-endforeach()
+add_library(hwy_contrib STATIC ${HWY_CONTRIB_SOURCES})
+target_compile_options(hwy_contrib PRIVATE ${HWY_FLAGS})
+set_property(TARGET hwy_contrib PROPERTY POSITION_INDEPENDENT_CODE ON)
+target_include_directories(hwy_contrib PUBLIC ${CMAKE_CURRENT_LIST_DIR})
 
 # -------------------------------------------------------- hwy_list_targets
 # Generate a tool to print the compiled-in targets as defined by the current
@@ -187,6 +192,47 @@ target_include_directories(hwy_list_targets PRIVATE
 # and emulator prefix (if any).
 add_custom_command(TARGET hwy POST_BUILD
     COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:hwy_list_targets> || (exit 0))
+
+# --------------------------------------------------------
+# The following sections are skipped if this project is added via
+# add_subdirectory into parent project (i.e. used as library).
+# Those sections contain artifacts that are not required for building
+# parent project: tests, examples, benchmarks and installation.
+# --------------------------------------------------------
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+
+# -------------------------------------------------------- install library
+install(TARGETS hwy
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+# Install all the headers keeping the relative path to the current directory
+# when installing them.
+foreach (source ${HWY_SOURCES})
+  if ("${source}" MATCHES "\.h$")
+    get_filename_component(dirname "${source}" DIRECTORY)
+    install(FILES "${source}"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/${dirname}")
+  endif()
+endforeach()
+
+install(TARGETS hwy_contrib
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+# Install all the headers keeping the relative path to the current directory
+# when installing them.
+foreach (source ${HWY_CONTRIB_SOURCES})
+  if ("${source}" MATCHES "\.h$")
+    get_filename_component(dirname "${source}" DIRECTORY)
+    install(FILES "${source}"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/${dirname}")
+  endif()
+endforeach()
+
+# Add a pkg-config file for libhwy and the contrib/test libraries.
+set(HWY_LIBRARY_VERSION "${CMAKE_PROJECT_VERSION}")
+foreach (pc libhwy.pc libhwy-contrib.pc libhwy-test.pc)
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/${pc}.in" "${pc}" @ONLY)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${pc}"
+      DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+endforeach()
 
 # -------------------------------------------------------- Examples
 
@@ -251,18 +297,21 @@ endif()
 endif() # HWY_SYSTEM_GTEST
 
 set(HWY_TEST_FILES
-  contrib/image/image_test.cc
-  # contrib/math/math_test.cc
+  hwy/contrib/image/image_test.cc
+  # hwy/contrib/math/math_test.cc
   hwy/aligned_allocator_test.cc
   hwy/base_test.cc
   hwy/highway_test.cc
   hwy/targets_test.cc
   hwy/examples/skeleton_test.cc
   hwy/tests/arithmetic_test.cc
+  hwy/tests/blockwise_test.cc
   hwy/tests/combine_test.cc
   hwy/tests/compare_test.cc
   hwy/tests/convert_test.cc
+  hwy/tests/crypto_test.cc
   hwy/tests/logical_test.cc
+  hwy/tests/mask_test.cc
   hwy/tests/memory_test.cc
   hwy/tests/swizzle_test.cc
   hwy/tests/test_util_test.cc
@@ -274,11 +323,16 @@ foreach (TESTFILE IN LISTS HWY_TEST_FILES)
   get_filename_component(TESTNAME ${TESTFILE} NAME_WE)
   add_executable(${TESTNAME} ${TESTFILE})
   target_compile_options(${TESTNAME} PRIVATE ${HWY_FLAGS})
+  # Test all targets, not just the best/baseline. This changes the default
+  # policy to all-attainable; note that setting -DHWY_COMPILE_* directly can
+  # cause compile errors because only one may be set, and other CMakeLists.txt
+  # that include us may set them.
+  target_compile_options(${TESTNAME} PRIVATE -DHWY_IS_TEST=1)
 
   if(HWY_SYSTEM_GTEST)
-    target_link_libraries(${TESTNAME} hwy GTest::GTest GTest::Main)
+    target_link_libraries(${TESTNAME} hwy hwy_contrib GTest::GTest GTest::Main)
   else()
-    target_link_libraries(${TESTNAME} hwy gtest gtest_main)
+    target_link_libraries(${TESTNAME} hwy hwy_contrib gtest gtest_main)
   endif()
   # Output test targets in the test directory.
   set_target_properties(${TESTNAME} PROPERTIES PREFIX "tests/")
@@ -298,3 +352,5 @@ endforeach ()
 target_sources(skeleton_test PRIVATE hwy/examples/skeleton.cc)
 
 endif() # BUILD_TESTING
+
+endif() # CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR

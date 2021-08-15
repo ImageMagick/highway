@@ -98,6 +98,17 @@ using Twice = typename D::Twice;
 #define HWY_IF_LANE_SIZE_D(D, bytes) HWY_IF_LANE_SIZE(TFromD<D>, bytes)
 #define HWY_IF_NOT_LANE_SIZE_D(D, bytes) HWY_IF_NOT_LANE_SIZE(TFromD<D>, bytes)
 
+// Same, but with a vector argument.
+#define HWY_IF_UNSIGNED_V(V) HWY_IF_UNSIGNED(TFromV<V>)
+#define HWY_IF_SIGNED_V(V) HWY_IF_SIGNED(TFromV<V>)
+#define HWY_IF_FLOAT_V(V) HWY_IF_FLOAT(TFromV<V>)
+#define HWY_IF_LANE_SIZE_V(V, bytes) HWY_IF_LANE_SIZE(TFromV<V>, bytes)
+
+// For implementing functions for a specific type.
+// IsSame<...>() in template arguments is broken on MSVC2015.
+#define HWY_IF_LANES_ARE(T, V) \
+  EnableIf<IsSameT<T, TFromD<DFromV<V>>>::value>* = nullptr
+
 // Compile-time-constant, (typically but not guaranteed) an upper bound on the
 // number of lanes.
 // Prefer instead using Lanes() and dynamic allocation, or Rebind, or
@@ -108,7 +119,7 @@ HWY_INLINE HWY_MAYBE_UNUSED constexpr size_t MaxLanes(Simd<T, N>) {
 }
 
 // Targets with non-constexpr Lanes define this themselves.
-#if HWY_TARGET != HWY_RVV
+#if HWY_TARGET != HWY_RVV && HWY_TARGET != HWY_SVE2 && HWY_TARGET != HWY_SVE
 
 // (Potentially) non-constant actual size of the vector at runtime, subject to
 // the limit imposed by the Simd. Useful for advancing loop counters.

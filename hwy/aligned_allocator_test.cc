@@ -16,6 +16,7 @@
 
 #include <stddef.h>
 
+#include <array>
 #include <new>
 #include <random>
 #include <vector>
@@ -87,13 +88,39 @@ TEST(AlignedAllocatorTest, FreeNullptr) {
                    /*opaque_ptr=*/nullptr);
 }
 
+TEST(AlignedAllocatorTest, Log2) {
+  EXPECT_EQ(0u, detail::ShiftCount(1));
+  EXPECT_EQ(1u, detail::ShiftCount(2));
+  EXPECT_EQ(3u, detail::ShiftCount(8));
+}
+
+// Allocator returns null when it detects overflow of items * sizeof(T).
+TEST(AlignedAllocatorTest, Overflow) {
+  constexpr size_t max = ~size_t(0);
+  constexpr size_t msb = (max >> 1) + 1;
+  using Size5 = std::array<uint8_t, 5>;
+  using Size10 = std::array<uint8_t, 10>;
+  EXPECT_EQ(nullptr,
+            detail::AllocateAlignedItems<uint32_t>(max / 2, nullptr, nullptr));
+  EXPECT_EQ(nullptr,
+            detail::AllocateAlignedItems<uint32_t>(max / 3, nullptr, nullptr));
+  EXPECT_EQ(nullptr,
+            detail::AllocateAlignedItems<Size5>(max / 4, nullptr, nullptr));
+  EXPECT_EQ(nullptr,
+            detail::AllocateAlignedItems<uint16_t>(msb, nullptr, nullptr));
+  EXPECT_EQ(nullptr,
+            detail::AllocateAlignedItems<double>(msb + 1, nullptr, nullptr));
+  EXPECT_EQ(nullptr,
+            detail::AllocateAlignedItems<Size10>(msb / 4, nullptr, nullptr));
+}
+
 TEST(AlignedAllocatorTest, AllocDefaultPointers) {
   const size_t kSize = 7777;
   void* ptr = AllocateAlignedBytes(kSize, /*alloc_ptr=*/nullptr,
                                    /*opaque_ptr=*/nullptr);
   ASSERT_NE(nullptr, ptr);
   // Make sure the pointer is actually aligned.
-  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(ptr) % kMaxVectorSize);
+  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(ptr) % HWY_ALIGNMENT);
   char* p = static_cast<char*>(ptr);
   size_t ret = 0;
   for (size_t i = 0; i < kSize; i++) {
@@ -125,7 +152,7 @@ TEST(AlignedAllocatorTest, CustomAlloc) {
   // We should have only requested one alloc from the allocator.
   EXPECT_EQ(1U, fake_alloc.PendingAllocs());
   // Make sure the pointer is actually aligned.
-  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(ptr) % kMaxVectorSize);
+  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(ptr) % HWY_ALIGNMENT);
   FreeAlignedBytes(ptr, &FakeAllocator::StaticFree, &fake_alloc);
   EXPECT_EQ(0U, fake_alloc.PendingAllocs());
 }
@@ -170,7 +197,7 @@ TEST(AlignedAllocatorTest, MakeUniqueAlignedArray) {
 TEST(AlignedAllocatorTest, AllocSingleInt) {
   auto ptr = AllocateAligned<uint32_t>(1);
   ASSERT_NE(nullptr, ptr.get());
-  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(ptr.get()) % kMaxVectorSize);
+  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(ptr.get()) % HWY_ALIGNMENT);
   // Force delete of the unique_ptr now to check that it doesn't crash.
   ptr.reset(nullptr);
   EXPECT_EQ(nullptr, ptr.get());
@@ -180,7 +207,7 @@ TEST(AlignedAllocatorTest, AllocMultipleInt) {
   const size_t kSize = 7777;
   auto ptr = AllocateAligned<uint32_t>(kSize);
   ASSERT_NE(nullptr, ptr.get());
-  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(ptr.get()) % kMaxVectorSize);
+  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(ptr.get()) % HWY_ALIGNMENT);
   // ptr[i] is actually (*ptr.get())[i] which will use the operator[] of the
   // underlying type chosen by AllocateAligned() for the std::unique_ptr.
   EXPECT_EQ(&(ptr[0]) + 1, &(ptr[1]));
@@ -215,7 +242,8 @@ TEST(AlignedAllocatorTest, MakeUniqueAlignedArrayWithCustomAlloc) {
     auto arr = MakeUniqueAlignedArrayWithAlloc<SampleObject<24>>(
         7, FakeAllocator::StaticAlloc, FakeAllocator::StaticFree, &fake_alloc,
         &counter);
-    // An array shold still only call a single allocation.
+    ASSERT_NE(nullptr, arr.get());
+    // An array should still only call a single allocation.
     EXPECT_EQ(1u, fake_alloc.PendingAllocs());
     EXPECT_EQ(7, counter);
     for (size_t i = 0; i < 7; i++) {
@@ -248,3 +276,9 @@ TEST(AlignedAllocatorTest, DefaultInit) {
 }
 
 }  // namespace hwy
+
+// Ought not to be necessary, but without this, no tests run on RVV.
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

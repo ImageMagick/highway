@@ -177,7 +177,7 @@ via Argument-Dependent Lookup. However, this does not work for function
 templates, and RVV and SVE both use builtin vectors. There are three options for
 portable code, in descending order of preference:
 
--   `namespace hn = highway::HWY_NAMESPACE;` alias used to prefix ops, e.g.
+-   `namespace hn = hwy::HWY_NAMESPACE;` alias used to prefix ops, e.g.
     `hn::LoadDup128(..)`;
 -   `using hwy::HWY_NAMESPACE::LoadDup128;` declarations for each op used;
 -   `using hwy::HWY_NAMESPACE;` directive. This is generally discouraged,
@@ -392,18 +392,68 @@ Special functions for signed types:
 *   `V`: `i32/64` \
     <code>V **BroadcastSignBit**(V a)</code> returns `a[i] < 0 ? -1 : 0`.
 
+*   <code>V **ZeroIfNegative**(V v)</code>: returns `v[i] < 0 ? 0 : v[i]`.
+
 ### Masks
 
 Let `M` denote a mask capable of storing true/false for each lane.
 
+#### Creation
+
 *   <code>M **FirstN**(D, size_t N)</code>: returns mask with the first `N`
-    lanes (those with index `< N`) true. `N` larger than `Lanes(D())` result in
-    an all-true mask. Useful for implementing "masked" stores by loading `prev`
+    lanes (those with index `< N`) true. `N >= Lanes(D())` results in an
+    all-true mask. Useful for implementing "masked" stores by loading `prev`
     followed by `IfThenElse(FirstN(d, N), what_to_store, prev)`.
+
+*   <code>M **MaskFromVec**(V v)</code>: returns false in lane `i` if `v[i] ==
+    0`, or true if `v[i]` has all bits set.
+
+*   <code>M **LoadMaskBits**(D, const uint8_t* p)</code>: returns a mask
+    indicating whether the i-th bit in the array is set. Loads bytes and bits in
+    ascending order of address and index. At least 8 bytes of `p` must be
+    readable, but only `(Lanes(D()) + 7) / 8` need be initialized. Any unused
+    bits (happens if `Lanes(D()) < 8`) are treated as if they were zero.
+
+#### Conversion
 
 *   <code>M1 **RebindMask**(D, M2 m)</code>: returns same mask bits as `m`, but
     reinterpreted as a mask for lanes of type `TFromD<D>`. `M1` and `M2` must
     have the same number of lanes.
+
+*   <code>V **VecFromMask**(D, M m)</code>: returns 0 in lane `i` if `m[i] ==
+    false`, otherwise all bits set.
+
+*   <code>size_t **StoreMaskBits**(D, M m, uint8_t* p)</code>: stores a bit
+    array indicating whether `m[i]` is true, in ascending order of `i`, filling
+    the bits of each byte from least to most significant, then proceeding to the
+    next byte. Returns the number of bytes written: `(Lanes(D()) + 7) / 8`. At
+    least 8 bytes of `p` must be writable.
+
+#### Testing
+
+*   <code>bool **AllTrue**(D, M m)</code>: returns whether all `m[i]` are true.
+
+*   <code>bool **AllFalse**(D, M m)</code>: returns whether all `m[i]` are
+    false.
+
+*   <code>size_t **CountTrue**(D, M m)</code>: returns how many of `m[i]` are
+    true [0, N]. This is typically more expensive than AllTrue/False.
+
+*   <code>intptr_t **FindFirstTrue**(D, M m)</code>: returns the index of the
+    first (i.e. lowest index) `m[i]` that is true, or -1 if none are.
+
+#### Ternary operator
+
+*   <code>V **IfThenElse**(M mask, V yes, V no)</code>: returns `mask[i] ?
+    yes[i] : no[i]`.
+
+*   <code>V **IfThenElseZero**(M mask, V yes)</code>: returns `mask[i] ?
+    yes[i] : 0`.
+
+*   <code>V **IfThenZeroElse**(M mask, V no)</code>: returns `mask[i] ? 0 :
+    no[i]`.
+
+#### Logical
 
 *   <code>M **Not**(M m)</code>: returns mask of elements indicating whether the
     input mask element was not set.
@@ -420,53 +470,36 @@ Let `M` denote a mask capable of storing true/false for each lane.
 *   <code>M **Xor**(M a, M b)</code>: returns mask of elements indicating
     whether exactly one input mask element was set.
 
-*   <code>M **MaskFromVec**(V v)</code>: returns false in lane `i` if `v[i] ==
-    0`, or true if `v[i]` has all bits set.
-
-*   <code>V **VecFromMask**(D, M m)</code>: returns 0 in lane `i` if `m[i] ==
-    false`, otherwise all bits set.
-
-*   <code>V **IfThenElse**(M mask, V yes, V no)</code>: returns `mask[i] ?
-    yes[i] : no[i]`.
-
-*   <code>V **IfThenElseZero**(M mask, V yes)</code>: returns `mask[i] ?
-    yes[i] : 0`.
-
-*   <code>V **IfThenZeroElse**(M mask, V no)</code>: returns `mask[i] ? 0 :
-    no[i]`.
-
-*   <code>V **ZeroIfNegative**(V v)</code>: returns `v[i] < 0 ? 0 : v[i]`.
-
-*   <code>bool **AllTrue**(D, M m)</code>: returns whether all `m[i]` are true.
-
-*   <code>bool **AllFalse**(D, M m)</code>: returns whether all `m[i]` are
-    false.
-
-*   <code>size_t **StoreMaskBits**(D, M m, uint8_t* p)</code>: stores a bit
-    array indicating whether `m[i]` is true, in ascending order of `i`, filling
-    the bits of each byte from least to most significant, then proceeding to the
-    next byte. Returns the number of (partial) bytes written.
-
-*   <code>size_t **CountTrue**(D, M m)</code>: returns how many of `m[i]` are
-    true [0, N]. This is typically more expensive than AllTrue/False.
-
-*   <code>intptr_t **FindFirstTrue**(D, M m)</code>: returns the index of the
-    first (i.e. lowest index) `m[i]` that is true, or -1 if none are.
+#### Compress
 
 *   `V`: `{u,i,f}{16,32,64}` \
     <code>V **Compress**(V v, M m)</code>: returns `r` such that `r[n]` is
     `v[i]`, with `i` the n-th lane index (starting from 0) where `m[i]` is true.
     Compacts lanes whose mask is set into the lower lanes; upper lanes are
-    implementation-defined. Slow with 16-bit lanes.
+    implementation-defined. Slow with 16-bit lanes. Use this form when the input
+    is already a mask, e.g. returned by a comparison.
 
 *   `V`: `{u,i,f}{16,32,64}` \
-    <code>size_t **CompressStore**(V v, M m, D d, T* aligned)</code>: writes
-    lanes whose mask `m` is set into `aligned`, starting from lane 0. Returns
-    `CountTrue(d, m)`, the number of valid lanes. All subsequent lanes may be
-    overwritten! Alignment ensures inactive lanes will not cause faults. Slower
-    for 16-bit lanes.
+    <code>size_t **CompressStore**(V v, M m, D d, T* p)</code>: writes lanes
+    whose mask `m` is set into `p`, starting from lane 0. Returns `CountTrue(d,
+    m)`, the number of valid lanes. May be implemented as `Compress` followed by
+    `StoreU`; lanes after the valid ones may still be overwritten! Slower for
+    16-bit lanes.
 
-### Comparisons
+*   `V`: `{u,i,f}{16,32,64}` \
+    <code>V **CompressBits**(V v, const uint8_t* HWY_RESTRICT bits)</code>:
+    Equivalent to, but often faster than `Compress(v, LoadMaskBits(d, bits))`.
+    `bits` is as specified for `LoadMaskBits`. If called multiple times, the
+    `bits` pointer passed to this function must also be marked `HWY_RESTRICT` to
+    avoid repeated work. Note that if the vector has less than 8 elements,
+    incrementing `bits` will not work as intended for packed bit arrays.
+
+*   `V`: `{u,i,f}{16,32,64}` \
+    <code>size_t **CompressBitsStore**(V v, const uint8_t* HWY_RESTRICT bits, D
+    d, T* p)</code>: combination of `CompressStore` and `CompressBits`, see
+    remarks there.
+
+#### Comparisons
 
 These return a mask (see above) indicating whether the condition is true.
 
@@ -501,10 +534,23 @@ are naturally aligned. An unaligned access may require two load ports.
 
 #### Load
 
+Requires naturally-aligned vectors (e.g. from aligned_allocator.h):
+
 *   <code>Vec&lt;D&gt; **Load**(D, const T* aligned)</code>: returns
     `aligned[i]`. May fault if the pointer is not aligned to the vector size.
     Using this whenever possible improves codegen on SSSE3/SSE4: unlike `LoadU`,
     `Load` can be fused into a memory operand, which reduces register pressure.
+
+*   <code>Vec&lt;D&gt; **MaskedLoad**(M mask, D, const T* aligned)</code>:
+    returns `aligned[i]` or zero if the `mask` governing element `i` is false.
+    May fault if the pointer is not aligned to the vector size. The alignment
+    requirement prevents differing behavior for "masked off" elements at invalid
+    addresses. Equivalent to, and potentially more efficient than,
+    `IfThenElseZero(mask, Load(D(), aligned))`.
+
+Requires only *element-aligned* vectors (e.g. from malloc/std::vector, or
+aligned memory at indices which are not a multiple of the vector length):
+
 *   <code>Vec&lt;D&gt; **LoadU**(D, const T* p)</code>: returns `p[i]`.
 
 *   <code>Vec&lt;D&gt; **LoadDup128**(D, const T* p)</code>: returns one 128-bit
@@ -543,6 +589,7 @@ F(src[tbl[i]])` because `Scatter` is more expensive than `Gather`.
 *   <code>void **Store**(Vec&lt;D&gt; a, D, T* aligned)</code>: copies `a[i]`
     into `aligned[i]`, which must be naturally aligned. Writes exactly N *
     sizeof(T) bytes.
+
 *   <code>void **StoreU**(Vec&lt;D&gt; a, D, T* p)</code>: as Store, but without
     the alignment requirement.
 
@@ -601,8 +648,8 @@ All functions except `Stream` are defined in cache_control.h.
     <code>Vec&lt;D&gt; **PromoteTo**(D, V part)</code>: returns `part[i]`
     converted to 64-bit floating point.
 
-*   `V`,`D`: (`u32,u8`) \
-    <code>Vec&lt;D&gt; **U8FromU32**(V)</code>: special-case `u32` to `u8`
+*   `V`,`V8`: (`u32,u8`) \
+    <code>V8 **U8FromU32**(V)</code>: special-case `u32` to `u8`
     conversion when all lanes of `V` are already clamped to `[0, 256)`.
 
 `DemoteTo` and float-to-int `ConvertTo` return the closest representable value
@@ -693,6 +740,8 @@ their operands into independently processed 128-bit *blocks*.
     will set all lanes after the first 128 to 0. The number of lanes in `V` and
     `VI` may differ.
 
+#### Zip/Interleave
+
 *   <code>V **InterleaveLower**([D, ] V a, V b)</code>: returns *blocks* with
     alternating lanes from the lower halves of `a` and `b` (`a[0]` in the
     least-significant lane). The optional `D` (provided for consistency with
@@ -709,10 +758,12 @@ their operands into independently processed 128-bit *blocks*.
     consistency with `ZipUpper`) is `RepartitionToWide<DFromV<V>>`.
 
 *   `Ret`: `MakeWide<T>`; `V`: `{u,i}{8,16,32}` \
-    <code>Ret **ZipUpper**(V a, V b)</code>: returns the same bits as
+    <code>Ret **ZipUpper**(D, V a, V b)</code>: returns the same bits as
     `InterleaveUpper`, but repartitioned into double-width lanes (required in
     order to use this operation with scalars). `D` is
     `RepartitionToWide<DFromV<V>>`.
+
+#### Shift
 
 *   `V`: `{u,i}` \
     <code>V **ShiftLeftBytes**&lt;int&gt;([D, ] V)</code>: returns the result of
@@ -741,6 +792,8 @@ their operands into independently processed 128-bit *blocks*.
     a vector of *blocks* each the result of shifting two concatenated *blocks*
     `hi[i] || lo[i]` right by `int` lanes \[1, 16/sizeof(T)). `D` is
     `DFromV<V>`.
+
+#### Shuffle
 
 *   `V`: `{u,i,f}{32}` \
     <code>V **Shuffle2301**(V)</code>: returns *blocks* with 32-bit halves

@@ -1,4 +1,5 @@
 // Copyright 2019 Google LLC
+// SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,11 +18,10 @@
 #include <string.h>  // memcmp
 
 #include "hwy/aligned_allocator.h"
-#include "hwy/base.h"
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "tests/logical_test.cc"
-#include "hwy/foreach_target.h"
+#include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
 #include "hwy/tests/test_util-inl.h"
 
@@ -58,6 +58,24 @@ struct TestLogicalInteger {
     HWY_ASSERT_VEC_EQ(d, vi, AndNot(v0, vi));
     HWY_ASSERT_VEC_EQ(d, v0, AndNot(vi, v0));
     HWY_ASSERT_VEC_EQ(d, v0, AndNot(vi, vi));
+
+    HWY_ASSERT_VEC_EQ(d, v0, Or3(v0, v0, v0));
+    HWY_ASSERT_VEC_EQ(d, vi, Or3(v0, vi, v0));
+    HWY_ASSERT_VEC_EQ(d, vi, Or3(v0, v0, vi));
+    HWY_ASSERT_VEC_EQ(d, vi, Or3(v0, vi, vi));
+    HWY_ASSERT_VEC_EQ(d, vi, Or3(vi, v0, v0));
+    HWY_ASSERT_VEC_EQ(d, vi, Or3(vi, vi, v0));
+    HWY_ASSERT_VEC_EQ(d, vi, Or3(vi, v0, vi));
+    HWY_ASSERT_VEC_EQ(d, vi, Or3(vi, vi, vi));
+
+    HWY_ASSERT_VEC_EQ(d, v0, OrAnd(v0, v0, v0));
+    HWY_ASSERT_VEC_EQ(d, v0, OrAnd(v0, vi, v0));
+    HWY_ASSERT_VEC_EQ(d, v0, OrAnd(v0, v0, vi));
+    HWY_ASSERT_VEC_EQ(d, vi, OrAnd(v0, vi, vi));
+    HWY_ASSERT_VEC_EQ(d, vi, OrAnd(vi, v0, v0));
+    HWY_ASSERT_VEC_EQ(d, vi, OrAnd(vi, vi, v0));
+    HWY_ASSERT_VEC_EQ(d, vi, OrAnd(vi, v0, vi));
+    HWY_ASSERT_VEC_EQ(d, vi, OrAnd(vi, vi, vi));
 
     auto v = vi;
     v = And(v, vi);
@@ -160,26 +178,6 @@ HWY_NOINLINE void TestAllCopySign() {
   ForFloatTypes(ForPartialVectors<TestCopySign>());
 }
 
-struct TestZeroIfNegative {
-  template <class T, class D>
-  HWY_NOINLINE void operator()(T /*unused*/, D d) {
-    const auto v0 = Zero(d);
-    const auto vp = Iota(d, 1);
-    const auto vn = Iota(d, T(-1E5));  // assumes N < 10^5
-
-    // Zero and positive remain unchanged
-    HWY_ASSERT_VEC_EQ(d, v0, ZeroIfNegative(v0));
-    HWY_ASSERT_VEC_EQ(d, vp, ZeroIfNegative(vp));
-
-    // Negative are all replaced with zero
-    HWY_ASSERT_VEC_EQ(d, v0, ZeroIfNegative(vn));
-  }
-};
-
-HWY_NOINLINE void TestAllZeroIfNegative() {
-  ForFloatTypes(ForPartialVectors<TestZeroIfNegative>());
-}
-
 struct TestBroadcastSignBit {
   template <class T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
@@ -234,16 +232,11 @@ HWY_NOINLINE void TestAllTestBit() {
 struct TestPopulationCount {
   template <class T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
-#if HWY_TARGET == HWY_RVV || HWY_IS_DEBUG_BUILD
-    constexpr size_t kNumTests = 1 << 14;
-#else
-    constexpr size_t kNumTests = 1 << 20;
-#endif
     RandomState rng;
     size_t N = Lanes(d);
     auto data = AllocateAligned<T>(N);
     auto popcnt = AllocateAligned<T>(N);
-    for (size_t i = 0; i < kNumTests / N; i++) {
+    for (size_t i = 0; i < AdjustedReps(1 << 18) / N; i++) {
       for (size_t i = 0; i < N; i++) {
         data[i] = static_cast<T>(rng());
         popcnt[i] = static_cast<T>(PopCount(data[i]));
@@ -269,16 +262,9 @@ HWY_BEFORE_TEST(HwyLogicalTest);
 HWY_EXPORT_AND_TEST_P(HwyLogicalTest, TestAllLogicalInteger);
 HWY_EXPORT_AND_TEST_P(HwyLogicalTest, TestAllLogicalFloat);
 HWY_EXPORT_AND_TEST_P(HwyLogicalTest, TestAllCopySign);
-HWY_EXPORT_AND_TEST_P(HwyLogicalTest, TestAllZeroIfNegative);
 HWY_EXPORT_AND_TEST_P(HwyLogicalTest, TestAllBroadcastSignBit);
 HWY_EXPORT_AND_TEST_P(HwyLogicalTest, TestAllTestBit);
 HWY_EXPORT_AND_TEST_P(HwyLogicalTest, TestAllPopulationCount);
 }  // namespace hwy
-
-// Ought not to be necessary, but without this, no tests run on RVV.
-int main(int argc, char **argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
 
 #endif

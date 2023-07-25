@@ -16,10 +16,10 @@
 // Single-element vectors and operations.
 // External include guard in highway.h - see comment there.
 
-#include <stddef.h>
-#include <stdint.h>
+#ifndef HWY_NO_LIBCXX
+#include <math.h>  // sqrtf
+#endif
 
-#include "hwy/base.h"
 #include "hwy/ops/shared-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -101,11 +101,16 @@ HWY_API Vec1<TTo> BitCast(DTo /* tag */, Vec1<TFrom> v) {
 
 template <class D, HWY_IF_LANES_D(D, 1), typename T = TFromD<D>>
 HWY_API Vec1<T> Zero(D /* tag */) {
-  return Vec1<T>(T(0));
+  Vec1<T> v;
+  ZeroBytes<sizeof(v.raw)>(&v.raw);
+  return v;
 }
 
 template <class D>
 using VFromD = decltype(Zero(D()));
+
+// ------------------------------ Tuple (VFromD)
+#include "hwy/ops/tuple-inl.h"
 
 // ------------------------------ Set
 template <class D, HWY_IF_LANES_D(D, 1), typename T = TFromD<D>, typename T2>
@@ -124,6 +129,32 @@ template <class D, HWY_IF_LANES_D(D, 1), typename T = TFromD<D>, typename T2>
 HWY_API Vec1<T> Iota(const D /* tag */, const T2 first) {
   return Vec1<T>(static_cast<T>(first));
 }
+
+// ------------------------------ ResizeBitCast
+
+template <class D, typename FromV>
+HWY_API VFromD<D> ResizeBitCast(D /* tag */, FromV v) {
+  using TFrom = TFromV<FromV>;
+  using TTo = TFromD<D>;
+  constexpr size_t kCopyLen = HWY_MIN(sizeof(TFrom), sizeof(TTo));
+  TTo to = TTo{0};
+  CopyBytes<kCopyLen>(&v.raw, &to);
+  return VFromD<D>(to);
+}
+
+namespace detail {
+
+// ResizeBitCast on the HWY_SCALAR target has zero-extending semantics if
+// sizeof(TFromD<DTo>) is greater than sizeof(TFromV<FromV>)
+template <class FromSizeTag, class ToSizeTag, class DTo, class DFrom>
+HWY_INLINE VFromD<DTo> ZeroExtendResizeBitCast(FromSizeTag /* from_size_tag */,
+                                               ToSizeTag /* to_size_tag */,
+                                               DTo d_to, DFrom /*d_from*/,
+                                               VFromD<DFrom> v) {
+  return ResizeBitCast(d_to, v);
+}
+
+}  // namespace detail
 
 // ================================================== LOGICAL
 
@@ -245,29 +276,28 @@ HWY_API Mask1<T> FirstN(D /*tag*/, size_t n) {
 }
 
 // ------------------------------ IfVecThenElse
-
 template <typename T>
 HWY_API Vec1<T> IfVecThenElse(Vec1<T> mask, Vec1<T> yes, Vec1<T> no) {
   return IfThenElse(MaskFromVec(mask), yes, no);
 }
 
 // ------------------------------ CopySign
-
 template <typename T>
 HWY_API Vec1<T> CopySign(const Vec1<T> magn, const Vec1<T> sign) {
   static_assert(IsFloat<T>(), "Only makes sense for floating-point");
-  const auto msb = SignBit(Sisd<T>());
-  return Or(AndNot(msb, magn), And(msb, sign));
+  const DFromV<decltype(magn)> d;
+  return BitwiseIfThenElse(SignBit(d), sign, magn);
 }
 
+// ------------------------------ CopySignToAbs
 template <typename T>
 HWY_API Vec1<T> CopySignToAbs(const Vec1<T> abs, const Vec1<T> sign) {
   static_assert(IsFloat<T>(), "Only makes sense for floating-point");
-  return Or(abs, And(SignBit(Sisd<T>()), sign));
+  const Sisd<T> d;
+  return OrAnd(abs, SignBit(d), sign);
 }
 
 // ------------------------------ BroadcastSignBit
-
 template <typename T>
 HWY_API Vec1<T> BroadcastSignBit(const Vec1<T> v) {
   // This is used inside ShiftRight, so we cannot implement in terms of it.
@@ -353,6 +383,26 @@ HWY_API Mask1<T> ExclusiveNeither(const Mask1<T> a, Mask1<T> b) {
   return MaskFromVec(AndNot(VecFromMask(d, a), Not(VecFromMask(d, b))));
 }
 
+template <class T>
+HWY_API Mask1<T> SetAtOrAfterFirst(Mask1<T> mask) {
+  return mask;
+}
+
+template <class T>
+HWY_API Mask1<T> SetBeforeFirst(Mask1<T> mask) {
+  return Not(mask);
+}
+
+template <class T>
+HWY_API Mask1<T> SetOnlyFirst(Mask1<T> mask) {
+  return mask;
+}
+
+template <class T>
+HWY_API Mask1<T> SetAtOrBeforeFirst(Mask1<T> /*mask*/) {
+  return Mask1<T>::FromBool(true);
+}
+
 // ================================================== SHIFTS
 
 // ------------------------------ ShiftLeft/ShiftRight (BroadcastSignBit)
@@ -390,32 +440,13 @@ HWY_API Vec1<T> ShiftRight(const Vec1<T> v) {
 }
 
 // ------------------------------ RotateRight (ShiftRight)
-
-namespace detail {
-
-// For partial specialization: kBits == 0 results in an invalid shift count
-template <int kBits>
-struct RotateRight {
-  template <typename T>
-  HWY_INLINE Vec1<T> operator()(const Vec1<T> v) const {
-    return Or(ShiftRight<kBits>(v), ShiftLeft<sizeof(T) * 8 - kBits>(v));
-  }
-};
-
-template <>
-struct RotateRight<0> {
-  template <typename T>
-  HWY_INLINE Vec1<T> operator()(const Vec1<T> v) const {
-    return v;
-  }
-};
-
-}  // namespace detail
-
 template <int kBits, typename T>
 HWY_API Vec1<T> RotateRight(const Vec1<T> v) {
-  static_assert(0 <= kBits && kBits < sizeof(T) * 8, "Invalid shift");
-  return detail::RotateRight<kBits>()(v);
+  constexpr size_t kSizeInBits = sizeof(T) * 8;
+  static_assert(0 <= kBits && kBits < kSizeInBits, "Invalid shift");
+  if (kBits == 0) return v;
+  return Or(ShiftRight<kBits>(v),
+            ShiftLeft<HWY_MIN(kSizeInBits - 1, kSizeInBits - kBits)>(v));
 }
 
 // ------------------------------ ShiftLeftSame (BroadcastSignBit)
@@ -509,8 +540,8 @@ HWY_API Vec1<uint8_t> SaturatedAdd(const Vec1<uint8_t> a,
 }
 HWY_API Vec1<uint16_t> SaturatedAdd(const Vec1<uint16_t> a,
                                     const Vec1<uint16_t> b) {
-  return Vec1<uint16_t>(
-      static_cast<uint16_t>(HWY_MIN(HWY_MAX(0, a.raw + b.raw), 65535)));
+  return Vec1<uint16_t>(static_cast<uint16_t>(
+      HWY_MIN(HWY_MAX(0, static_cast<int32_t>(a.raw) + b.raw), 65535)));
 }
 
 // Signed
@@ -520,8 +551,8 @@ HWY_API Vec1<int8_t> SaturatedAdd(const Vec1<int8_t> a, const Vec1<int8_t> b) {
 }
 HWY_API Vec1<int16_t> SaturatedAdd(const Vec1<int16_t> a,
                                    const Vec1<int16_t> b) {
-  return Vec1<int16_t>(
-      static_cast<int16_t>(HWY_MIN(HWY_MAX(-32768, a.raw + b.raw), 32767)));
+  return Vec1<int16_t>(static_cast<int16_t>(
+      HWY_MIN(HWY_MAX(-32768, static_cast<int32_t>(a.raw) + b.raw), 32767)));
 }
 
 // ------------------------------ Saturating subtraction
@@ -536,8 +567,8 @@ HWY_API Vec1<uint8_t> SaturatedSub(const Vec1<uint8_t> a,
 }
 HWY_API Vec1<uint16_t> SaturatedSub(const Vec1<uint16_t> a,
                                     const Vec1<uint16_t> b) {
-  return Vec1<uint16_t>(
-      static_cast<uint16_t>(HWY_MIN(HWY_MAX(0, a.raw - b.raw), 65535)));
+  return Vec1<uint16_t>(static_cast<uint16_t>(
+      HWY_MIN(HWY_MAX(0, static_cast<int32_t>(a.raw) - b.raw), 65535)));
 }
 
 // Signed
@@ -547,8 +578,8 @@ HWY_API Vec1<int8_t> SaturatedSub(const Vec1<int8_t> a, const Vec1<int8_t> b) {
 }
 HWY_API Vec1<int16_t> SaturatedSub(const Vec1<int16_t> a,
                                    const Vec1<int16_t> b) {
-  return Vec1<int16_t>(
-      static_cast<int16_t>(HWY_MIN(HWY_MAX(-32768, a.raw - b.raw), 32767)));
+  return Vec1<int16_t>(static_cast<int16_t>(
+      HWY_MIN(HWY_MAX(-32768, static_cast<int32_t>(a.raw) - b.raw), 32767)));
 }
 
 // ------------------------------ Average
@@ -646,30 +677,36 @@ HWY_API Vec1<T> Max(const Vec1<T> a, const Vec1<T> b) {
 
 // ------------------------------ Floating-point negate
 
-template <typename T, HWY_IF_FLOAT(T)>
+template <typename T, HWY_IF_FLOAT_OR_SPECIAL(T)>
 HWY_API Vec1<T> Neg(const Vec1<T> v) {
   return Xor(v, SignBit(Sisd<T>()));
 }
 
-template <typename T, HWY_IF_NOT_FLOAT(T)>
+template <typename T, HWY_IF_NOT_FLOAT_NOR_SPECIAL(T)>
 HWY_API Vec1<T> Neg(const Vec1<T> v) {
   return Zero(Sisd<T>()) - v;
 }
 
 // ------------------------------ mul/div
 
+// Per-target flags to prevent generic_ops-inl.h defining 8/64-bit operator*.
+#ifdef HWY_NATIVE_MUL_8
+#undef HWY_NATIVE_MUL_8
+#else
+#define HWY_NATIVE_MUL_8
+#endif
+#ifdef HWY_NATIVE_MUL_64
+#undef HWY_NATIVE_MUL_64
+#else
+#define HWY_NATIVE_MUL_64
+#endif
+
 template <typename T, HWY_IF_FLOAT(T)>
 HWY_API Vec1<T> operator*(const Vec1<T> a, const Vec1<T> b) {
   return Vec1<T>(static_cast<T>(double{a.raw} * b.raw));
 }
 
-template <typename T, HWY_IF_SIGNED(T)>
-HWY_API Vec1<T> operator*(const Vec1<T> a, const Vec1<T> b) {
-  return Vec1<T>(static_cast<T>(static_cast<uint64_t>(a.raw) *
-                                static_cast<uint64_t>(b.raw)));
-}
-
-template <typename T, HWY_IF_UNSIGNED(T)>
+template <typename T, HWY_IF_NOT_FLOAT(T)>
 HWY_API Vec1<T> operator*(const Vec1<T> a, const Vec1<T> b) {
   return Vec1<T>(static_cast<T>(static_cast<uint64_t>(a.raw) *
                                 static_cast<uint64_t>(b.raw)));
@@ -1018,6 +1055,12 @@ HWY_API Vec1<T> MaskedLoad(Mask1<T> m, D d, const T* HWY_RESTRICT aligned) {
   return IfThenElseZero(m, Load(d, aligned));
 }
 
+template <class D, typename T = TFromD<D>>
+HWY_API Vec1<T> MaskedLoadOr(Vec1<T> v, Mask1<T> m, D d,
+                             const T* HWY_RESTRICT aligned) {
+  return IfThenElse(m, Load(d, aligned), v);
+}
+
 template <class D, HWY_IF_LANES_D(D, 1), typename T = TFromD<D>>
 HWY_API Vec1<T> LoadU(D d, const T* HWY_RESTRICT p) {
   return Load(d, p);
@@ -1182,7 +1225,8 @@ HWY_API Vec1<int32_t> DemoteTo(D /* tag */, Vec1<double> from) {
   return Vec1<int32_t>(static_cast<int32_t>(from.raw));
 }
 
-template <class DTo, typename TTo = TFromD<DTo>, typename TFrom>
+template <class DTo, typename TTo = TFromD<DTo>, typename TFrom,
+          HWY_IF_SIGNED(TFrom), HWY_IF_NOT_FLOAT_NOR_SPECIAL(TFromD<DTo>)>
 HWY_API Vec1<TTo> DemoteTo(DTo /* tag */, Vec1<TFrom> from) {
   static_assert(!IsFloat<TFrom>(), "TFrom=double are handled above");
   static_assert(sizeof(TTo) < sizeof(TFrom), "Not demoting");
@@ -1192,28 +1236,28 @@ HWY_API Vec1<TTo> DemoteTo(DTo /* tag */, Vec1<TFrom> from) {
   return Vec1<TTo>(static_cast<TTo>(from.raw));
 }
 
+template <class DTo, typename TTo = TFromD<DTo>, typename TFrom,
+          HWY_IF_UNSIGNED(TFrom), HWY_IF_UNSIGNED_D(DTo)>
+HWY_API Vec1<TTo> DemoteTo(DTo /* tag */, Vec1<TFrom> from) {
+  static_assert(!IsFloat<TFrom>(), "TFrom=double are handled above");
+  static_assert(sizeof(TTo) < sizeof(TFrom), "Not demoting");
+
+  // Int to int: choose closest value in TTo to `from` (avoids UB)
+  from.raw = HWY_MIN(from.raw, LimitsMax<TTo>());
+  return Vec1<TTo>(static_cast<TTo>(from.raw));
+}
+
+// Per-target flag to prevent generic_ops-inl.h from defining f16 conversions;
+// use this scalar version to verify the vector implementation.
+#ifdef HWY_NATIVE_F16C
+#undef HWY_NATIVE_F16C
+#else
+#define HWY_NATIVE_F16C
+#endif
+
 template <class D, HWY_IF_F32_D(D)>
 HWY_API Vec1<float> PromoteTo(D /* tag */, const Vec1<float16_t> v) {
-  uint16_t bits16;
-  CopySameSize(&v.raw, &bits16);
-  const uint32_t sign = static_cast<uint32_t>(bits16 >> 15);
-  const uint32_t biased_exp = (bits16 >> 10) & 0x1F;
-  const uint32_t mantissa = bits16 & 0x3FF;
-
-  // Subnormal or zero
-  if (biased_exp == 0) {
-    const float subnormal =
-        (1.0f / 16384) * (static_cast<float>(mantissa) * (1.0f / 1024));
-    return Vec1<float>(sign ? -subnormal : subnormal);
-  }
-
-  // Normalized: convert the representation directly (faster than ldexp/tables).
-  const uint32_t biased_exp32 = biased_exp + (127 - 15);
-  const uint32_t mantissa32 = mantissa << (23 - 10);
-  const uint32_t bits32 = (sign << 31) | (biased_exp32 << 23) | mantissa32;
-  float out;
-  CopySameSize(&bits32, &out);
-  return Vec1<float>(out);
+  return Vec1<float>(F32FromF16(v.raw));
 }
 
 template <class D, HWY_IF_F32_D(D)>
@@ -1223,44 +1267,7 @@ HWY_API Vec1<float> PromoteTo(D d, const Vec1<bfloat16_t> v) {
 
 template <class D, HWY_IF_F16_D(D)>
 HWY_API Vec1<float16_t> DemoteTo(D /* tag */, const Vec1<float> v) {
-  uint32_t bits32;
-  CopySameSize(&v.raw, &bits32);
-  const uint32_t sign = bits32 >> 31;
-  const uint32_t biased_exp32 = (bits32 >> 23) & 0xFF;
-  const uint32_t mantissa32 = bits32 & 0x7FFFFF;
-
-  const int32_t exp = HWY_MIN(static_cast<int32_t>(biased_exp32) - 127, 15);
-
-  // Tiny or zero => zero.
-  Vec1<float16_t> out;
-  if (exp < -24) {
-    const uint16_t zero = 0;
-    CopySameSize(&zero, &out.raw);
-    return out;
-  }
-
-  uint32_t biased_exp16, mantissa16;
-
-  // exp = [-24, -15] => subnormal
-  if (exp < -14) {
-    biased_exp16 = 0;
-    const uint32_t sub_exp = static_cast<uint32_t>(-14 - exp);
-    HWY_DASSERT(1 <= sub_exp && sub_exp < 11);
-    mantissa16 = static_cast<uint32_t>((1u << (10 - sub_exp)) +
-                                       (mantissa32 >> (13 + sub_exp)));
-  } else {
-    // exp = [-14, 15]
-    biased_exp16 = static_cast<uint32_t>(exp + 15);
-    HWY_DASSERT(1 <= biased_exp16 && biased_exp16 < 31);
-    mantissa16 = mantissa32 >> 13;
-  }
-
-  HWY_DASSERT(mantissa16 < 1024);
-  const uint32_t bits16 = (sign << 15) | (biased_exp16 << 10) | mantissa16;
-  HWY_DASSERT(bits16 < 0x10000);
-  const uint16_t narrowed = static_cast<uint16_t>(bits16);  // big-endian safe
-  CopySameSize(&narrowed, &out.raw);
-  return out;
+  return Vec1<float16_t>(F16FromF32(v.raw));
 }
 
 template <class D, HWY_IF_BF16_D(D)>
@@ -1396,8 +1403,8 @@ struct Indices1 {
 template <class D, typename T = TFromD<D>, typename TI>
 HWY_API Indices1<T> IndicesFromVec(D, Vec1<TI> vec) {
   static_assert(sizeof(T) == sizeof(TI), "Index size must match lane size");
-  HWY_DASSERT(vec.raw == 0);
-  return Indices1<T>{vec.raw};
+  HWY_DASSERT(vec.raw <= 1);
+  return Indices1<T>{static_cast<MakeSigned<T>>(vec.raw)};
 }
 
 template <class D, HWY_IF_LANES_D(D, 1), typename T = TFromD<D>, typename TI>
@@ -1408,6 +1415,12 @@ HWY_API Indices1<T> SetTableIndices(D d, const TI* idx) {
 template <typename T>
 HWY_API Vec1<T> TableLookupLanes(const Vec1<T> v, const Indices1<T> /* idx */) {
   return v;
+}
+
+template <typename T>
+HWY_API Vec1<T> TwoTablesLookupLanes(const Vec1<T> a, const Vec1<T> b,
+                                     const Indices1<T> idx) {
+  return (idx.raw == 0) ? a : b;
 }
 
 // ------------------------------ ReverseBlocks
@@ -1425,6 +1438,13 @@ HWY_API Vec1<T> Reverse(D /* tag */, const Vec1<T> v) {
   return v;
 }
 
+// Per-target flag to prevent generic_ops-inl.h defining 8-bit Reverse2/4/8.
+#ifdef HWY_NATIVE_REVERSE2_8
+#undef HWY_NATIVE_REVERSE2_8
+#else
+#define HWY_NATIVE_REVERSE2_8
+#endif
+
 // Must not be called:
 template <class D, typename T = TFromD<D>>
 HWY_API Vec1<T> Reverse2(D /* tag */, const Vec1<T> v) {
@@ -1438,6 +1458,120 @@ HWY_API Vec1<T> Reverse4(D /* tag */, const Vec1<T> v) {
 
 template <class D, typename T = TFromD<D>>
 HWY_API Vec1<T> Reverse8(D /* tag */, const Vec1<T> v) {
+  return v;
+}
+
+// ------------------------------ ReverseLaneBytes
+
+#ifdef HWY_NATIVE_REVERSE_LANE_BYTES
+#undef HWY_NATIVE_REVERSE_LANE_BYTES
+#else
+#define HWY_NATIVE_REVERSE_LANE_BYTES
+#endif
+
+HWY_API Vec1<uint16_t> ReverseLaneBytes(Vec1<uint16_t> v) {
+  const uint32_t val{v.raw};
+  return Vec1<uint16_t>(
+      static_cast<uint16_t>(((val << 8) & 0xFF00u) | ((val >> 8) & 0x00FFu)));
+}
+
+HWY_API Vec1<uint32_t> ReverseLaneBytes(Vec1<uint32_t> v) {
+  const uint32_t val = v.raw;
+  return Vec1<uint32_t>(static_cast<uint32_t>(
+      ((val << 24) & 0xFF000000u) | ((val << 8) & 0x00FF0000u) |
+      ((val >> 8) & 0x0000FF00u) | ((val >> 24) & 0x000000FFu)));
+}
+
+HWY_API Vec1<uint64_t> ReverseLaneBytes(Vec1<uint64_t> v) {
+  const uint64_t val = v.raw;
+  return Vec1<uint64_t>(static_cast<uint64_t>(
+      ((val << 56) & 0xFF00000000000000u) |
+      ((val << 40) & 0x00FF000000000000u) |
+      ((val << 24) & 0x0000FF0000000000u) | ((val << 8) & 0x000000FF00000000u) |
+      ((val >> 8) & 0x00000000FF000000u) | ((val >> 24) & 0x0000000000FF0000u) |
+      ((val >> 40) & 0x000000000000FF00u) |
+      ((val >> 56) & 0x00000000000000FFu)));
+}
+
+template <class V, HWY_IF_SIGNED_V(V),
+          HWY_IF_T_SIZE_ONE_OF_V(V, (1 << 2) | (1 << 4) | (1 << 8))>
+HWY_API V ReverseLaneBytes(V v) {
+  const DFromV<decltype(v)> d;
+  const RebindToUnsigned<decltype(d)> du;
+  return BitCast(d, ReverseLaneBytes(BitCast(du, v)));
+}
+
+// ------------------------------ ReverseBits
+#ifdef HWY_NATIVE_REVERSE_BITS_UI8
+#undef HWY_NATIVE_REVERSE_BITS_UI8
+#else
+#define HWY_NATIVE_REVERSE_BITS_UI8
+#endif
+
+#ifdef HWY_NATIVE_REVERSE_BITS_UI16_32_64
+#undef HWY_NATIVE_REVERSE_BITS_UI16_32_64
+#else
+#define HWY_NATIVE_REVERSE_BITS_UI16_32_64
+#endif
+
+namespace detail {
+
+template <class T>
+HWY_INLINE T ReverseBitsOfEachByte(T val) {
+  using TU = MakeUnsigned<T>;
+  constexpr TU kMaxUnsignedVal{LimitsMax<TU>()};
+  constexpr TU kShrMask1 =
+      static_cast<TU>(0x5555555555555555u & kMaxUnsignedVal);
+  constexpr TU kShrMask2 =
+      static_cast<TU>(0x3333333333333333u & kMaxUnsignedVal);
+  constexpr TU kShrMask3 =
+      static_cast<TU>(0x0F0F0F0F0F0F0F0Fu & kMaxUnsignedVal);
+
+  constexpr TU kShlMask1 = static_cast<TU>(~kShrMask1);
+  constexpr TU kShlMask2 = static_cast<TU>(~kShrMask2);
+  constexpr TU kShlMask3 = static_cast<TU>(~kShrMask3);
+
+  TU result = static_cast<TU>(val);
+  result = static_cast<TU>(((result << 1) & kShlMask1) |
+                           ((result >> 1) & kShrMask1));
+  result = static_cast<TU>(((result << 2) & kShlMask2) |
+                           ((result >> 2) & kShrMask2));
+  result = static_cast<TU>(((result << 4) & kShlMask3) |
+                           ((result >> 4) & kShrMask3));
+  return static_cast<T>(result);
+}
+
+}  // namespace detail
+
+template <class V, HWY_IF_UNSIGNED_V(V), HWY_IF_T_SIZE_V(V, 1)>
+HWY_API V ReverseBits(V v) {
+  return V(detail::ReverseBitsOfEachByte(v.raw));
+}
+
+template <class V, HWY_IF_UNSIGNED_V(V),
+          HWY_IF_T_SIZE_ONE_OF_V(V, (1 << 2) | (1 << 4) | (1 << 8))>
+HWY_API V ReverseBits(V v) {
+  return ReverseLaneBytes(V(detail::ReverseBitsOfEachByte(v.raw)));
+}
+
+template <class V, HWY_IF_SIGNED_V(V)>
+HWY_API V ReverseBits(V v) {
+  const DFromV<decltype(v)> d;
+  const RebindToUnsigned<decltype(d)> du;
+  return BitCast(d, ReverseBits(BitCast(du, v)));
+}
+
+// ------------------------------ SlideUpLanes
+
+template <typename D>
+HWY_API VFromD<D> SlideUpLanes(D /*d*/, VFromD<D> v, size_t /*amt*/) {
+  return v;
+}
+
+// ------------------------------ SlideDownLanes
+
+template <typename D>
+HWY_API VFromD<D> SlideDownLanes(D /*d*/, VFromD<D> v, size_t /*amt*/) {
   return v;
 }
 
@@ -1550,6 +1684,16 @@ HWY_API size_t FindKnownFirstTrue(D /* tag */, const Mask1<T> /* m */) {
   return 0;  // There is only one lane and we know it is true.
 }
 
+template <class D, typename T = TFromD<D>>
+HWY_API intptr_t FindLastTrue(D /* tag */, const Mask1<T> mask) {
+  return mask.bits == 0 ? -1 : 0;
+}
+
+template <class D, typename T = TFromD<D>>
+HWY_API size_t FindKnownLastTrue(D /* tag */, const Mask1<T> /* m */) {
+  return 0;  // There is only one lane and we know it is true.
+}
+
 // ------------------------------ Compress, CompressBits
 
 template <typename T>
@@ -1622,6 +1766,20 @@ HWY_API VFromD<D> LoadExpand(MFromD<D> mask, D d,
   return MaskedLoad(mask, d, unaligned);
 }
 
+// ------------------------------ WidenMulPairwiseAdd
+
+template <class D32, HWY_IF_F32_D(D32)>
+HWY_API Vec1<float> WidenMulPairwiseAdd(D32 /* tag */, Vec1<bfloat16_t> a,
+                                              Vec1<bfloat16_t> b) {
+  return Vec1<float>(F32FromBF16(a.raw)) * Vec1<float>(F32FromBF16(b.raw));
+}
+
+template <class D32, HWY_IF_I32_D(D32)>
+HWY_API Vec1<int32_t> WidenMulPairwiseAdd(D32 /* tag */, Vec1<int16_t> a,
+                                                Vec1<int16_t> b) {
+  return Vec1<int32_t>(a.raw * b.raw);
+}
+
 // ------------------------------ ReorderWidenMulAccumulate (MulAdd, ZipLower)
 
 template <class D32, HWY_IF_F32_D(D32)>
@@ -1653,6 +1811,10 @@ HWY_API Vec1<TW> RearrangeToOddPlusEven(Vec1<TW> sum0, Vec1<TW> /* sum1 */) {
 template <class D, typename T = TFromD<D>>
 HWY_API Vec1<T> SumOfLanes(D /* tag */, const Vec1<T> v) {
   return v;
+}
+template <class D, typename T = TFromD<D>>
+HWY_API T ReduceSum(D /* tag */, const Vec1<T> v) {
+  return GetLane(v);
 }
 template <class D, typename T = TFromD<D>>
 HWY_API Vec1<T> MinOfLanes(D /* tag */, const Vec1<T> v) {

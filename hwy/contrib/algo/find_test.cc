@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <stdio.h>
+
 #include <algorithm>  // std::find_if
 #include <vector>
 
@@ -24,7 +26,7 @@
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "hwy/contrib/algo/find_test.cc"
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
-
+#include "hwy/highway.h"
 #include "hwy/contrib/algo/find-inl.h"
 #include "hwy/tests/test_util-inl.h"
 // clang-format on
@@ -41,14 +43,17 @@ HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
 
-// Returns random number in [-8, 8) - we use knowledge of the range to Find()
+// Returns random number in [-8, 8] - we use knowledge of the range to Find()
 // values we know are not present.
 template <typename T>
 T Random(RandomState& rng) {
   const int32_t bits = static_cast<int32_t>(Random32(&rng)) & 1023;
-  const double val = (bits - 512) / 64.0;
+  double val = (bits - 512) / 64.0;
   // Clamp negative to zero for unsigned types.
-  return static_cast<T>(HWY_MAX(hwy::LowestValue<T>(), val));
+  if (!hwy::IsSigned<T>() && val < 0.0) {
+    val = -val;
+  }
+  return static_cast<T>(val);
 }
 
 // In C++14, we can instead define these as generic lambdas next to where they
@@ -101,6 +106,7 @@ struct TestFind {
     // Must allocate at least one even if count is zero.
     AlignedFreeUniquePtr<T[]> storage =
         AllocateAligned<T>(HWY_MAX(1, misalign + count));
+    HWY_ASSERT(storage);
     T* in = storage.get() + misalign;
     for (size_t i = 0; i < count; ++i) {
       in[i] = Random<T>(rng);
@@ -148,10 +154,11 @@ struct TestFindIf {
     // Must allocate at least one even if count is zero.
     AlignedFreeUniquePtr<T[]> storage =
         AllocateAligned<T>(HWY_MAX(1, misalign + count));
+    HWY_ASSERT(storage);
     T* in = storage.get() + misalign;
     for (size_t i = 0; i < count; ++i) {
       in[i] = Random<T>(rng);
-      HWY_ASSERT(in[i] < 8);
+      HWY_ASSERT(in[i] <= 8);
       HWY_ASSERT(!hwy::IsSigned<T>() || static_cast<TI>(in[i]) >= -8);
     }
 

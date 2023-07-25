@@ -13,23 +13,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Main header required before using vector types.
+
+// IWYU pragma: begin_exports
+#include "hwy/base.h"
+#include "hwy/detect_compiler_arch.h"
+#include "hwy/highway_export.h"
+#include "hwy/targets.h"
+// IWYU pragma: end_exports
+
 // This include guard is checked by foreach_target, so avoid the usual _H_
 // suffix to prevent copybara from renaming it. NOTE: ops/*-inl.h are included
 // after/outside this include guard.
 #ifndef HWY_HIGHWAY_INCLUDED
 #define HWY_HIGHWAY_INCLUDED
 
-// Main header required before using vector types.
-
-#include "hwy/base.h"
-#include "hwy/targets.h"
-
 namespace hwy {
 
 // API version (https://semver.org/); keep in sync with CMakeLists.txt.
 #define HWY_MAJOR 1
 #define HWY_MINOR 0
-#define HWY_PATCH 4
+#define HWY_PATCH 5
 
 //------------------------------------------------------------------------------
 // Shorthand for tags (defined in shared-inl.h) used to select overloads.
@@ -108,6 +112,8 @@ namespace hwy {
 #define HWY_STATIC_DISPATCH(FUNC_NAME) N_AVX3_DL::FUNC_NAME
 #elif HWY_STATIC_TARGET == HWY_AVX3_ZEN4
 #define HWY_STATIC_DISPATCH(FUNC_NAME) N_AVX3_ZEN4::FUNC_NAME
+#elif HWY_STATIC_TARGET == HWY_AVX3_SPR
+#define HWY_STATIC_DISPATCH(FUNC_NAME) N_AVX3_SPR::FUNC_NAME
 #endif
 
 // HWY_CHOOSE_*(FUNC_NAME) expands to the function pointer for that target or
@@ -236,6 +242,12 @@ namespace hwy {
 #define HWY_CHOOSE_AVX3_ZEN4(FUNC_NAME) nullptr
 #endif
 
+#if HWY_TARGETS & HWY_AVX3_SPR
+#define HWY_CHOOSE_AVX3_SPR(FUNC_NAME) &N_AVX3_SPR::FUNC_NAME
+#else
+#define HWY_CHOOSE_AVX3_SPR(FUNC_NAME) nullptr
+#endif
+
 // MSVC 2017 workaround: the non-type template parameter to ChooseAndCall
 // apparently cannot be an array. Use a function pointer instead, which has the
 // disadvantage that we call the static (not best) target on the first call to
@@ -325,6 +337,7 @@ FunctionCache<RetType, Args...> DeduceFunctionCache(RetType (*)(Args...)) {
   HWY_MAYBE_UNUSED static decltype(&HWY_STATIC_DISPATCH(FUNC_NAME)) const \
   HWY_DISPATCH_TABLE(FUNC_NAME)[1] = {&HWY_STATIC_DISPATCH(FUNC_NAME)}
 #define HWY_DYNAMIC_DISPATCH(FUNC_NAME) HWY_STATIC_DISPATCH(FUNC_NAME)
+#define HWY_DYNAMIC_POINTER(FUNC_NAME) &HWY_STATIC_DISPATCH(FUNC_NAME)
 
 #else
 
@@ -361,6 +374,8 @@ FunctionCache<RetType, Args...> DeduceFunctionCache(RetType (*)(Args...)) {
 
 #define HWY_DYNAMIC_DISPATCH(FUNC_NAME) \
   (*(HWY_DISPATCH_TABLE(FUNC_NAME)[hwy::GetChosenTarget().GetIndex()]))
+#define HWY_DYNAMIC_POINTER(FUNC_NAME) \
+  (HWY_DISPATCH_TABLE(FUNC_NAME)[hwy::GetChosenTarget().GetIndex()])
 
 #endif  // HWY_IDE || ((HWY_TARGETS & (HWY_TARGETS - 1)) == 0)
 
@@ -392,7 +407,7 @@ FunctionCache<RetType, Args...> DeduceFunctionCache(RetType (*)(Args...)) {
 #elif HWY_TARGET == HWY_AVX2
 #include "hwy/ops/x86_256-inl.h"
 #elif HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL || \
-    HWY_TARGET == HWY_AVX3_ZEN4
+    HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR
 #include "hwy/ops/x86_512-inl.h"
 #elif HWY_TARGET == HWY_PPC8 || HWY_TARGET == HWY_PPC9 || \
     HWY_TARGET == HWY_PPC10

@@ -10,6 +10,7 @@ package(
 license(
     name = "license",
     package_name = "highway",
+    license_kinds = ["@rules_license//licenses/generic:notice"],
 )
 
 licenses(["notice"])
@@ -183,6 +184,7 @@ cc_library(
         "hwy/ops/scalar-inl.h",
         "hwy/ops/set_macros-inl.h",
         "hwy/ops/shared-inl.h",
+        "hwy/ops/tuple-inl.h",
         "hwy/ops/x86_128-inl.h",
         "hwy/ops/x86_256-inl.h",
         "hwy/ops/x86_512-inl.h",
@@ -265,6 +267,18 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "unroller",
+    compatible_with = [],
+    copts = COPTS,
+    textual_hdrs = [
+        "hwy/contrib/unroller/unroller-inl.h",
+    ],
+    deps = [
+        ":hwy",
+    ],
+)
+
 # Everything required for tests that use Highway.
 cc_library(
     name = "hwy_test_util",
@@ -286,11 +300,21 @@ cc_library(
 
 cc_library(
     name = "nanobenchmark",
-    srcs = ["hwy/nanobenchmark.cc"],
-    hdrs = ["hwy/nanobenchmark.h"],
+    srcs = [
+        "hwy/nanobenchmark.cc",
+        "hwy/timer.cc",
+    ],
+    hdrs = [
+        "hwy/nanobenchmark.h",
+        "hwy/robust_statistics.h",
+        "hwy/timer.h",
+    ],
     compatible_with = [],
     copts = COPTS,
     local_defines = ["hwy_EXPORTS"],
+    textual_hdrs = [
+        "hwy/timer-inl.h",
+    ],
     deps = [":hwy"],
 )
 
@@ -332,6 +356,7 @@ HWY_TESTS = [
     ("hwy/contrib/dot/", "dot_test"),
     ("hwy/contrib/image/", "image_test"),
     ("hwy/contrib/math/", "math_test"),
+    ("hwy/contrib/unroller/", "unroller_test"),
     # contrib/sort has its own BUILD, we also add sort_test to GUITAR_TESTS.
     # To run bench_sort, specify --test=hwy/contrib/sort:bench_sort.
     ("hwy/examples/", "skeleton_test"),
@@ -341,12 +366,13 @@ HWY_TESTS = [
     ("hwy/", "highway_test"),
     ("hwy/", "targets_test"),
     ("hwy/tests/", "arithmetic_test"),
-    ("hwy/tests/", "blockwise_test"),
     ("hwy/tests/", "blockwise_shift_test"),
+    ("hwy/tests/", "blockwise_test"),
     ("hwy/tests/", "combine_test"),
     ("hwy/tests/", "compare_test"),
     ("hwy/tests/", "compress_test"),
     ("hwy/tests/", "convert_test"),
+    ("hwy/tests/", "count_test"),
     ("hwy/tests/", "crypto_test"),
     ("hwy/tests/", "demote_test"),
     ("hwy/tests/", "expand_test"),
@@ -354,15 +380,20 @@ HWY_TESTS = [
     ("hwy/tests/", "if_test"),
     ("hwy/tests/", "interleaved_test"),
     ("hwy/tests/", "logical_test"),
-    ("hwy/tests/", "mask_test"),
     ("hwy/tests/", "mask_mem_test"),
+    ("hwy/tests/", "mask_test"),
     ("hwy/tests/", "memory_test"),
     ("hwy/tests/", "mul_test"),
     ("hwy/tests/", "reduction_test"),
+    ("hwy/tests/", "resize_test"),
     ("hwy/tests/", "reverse_test"),
     ("hwy/tests/", "shift_test"),
+    ("hwy/tests/", "slide_up_down_test"),
+    ("hwy/tests/", "swizzle_block_test"),
     ("hwy/tests/", "swizzle_test"),
+    ("hwy/tests/", "table_test"),
     ("hwy/tests/", "test_util_test"),
+    ("hwy/tests/", "tuple_test"),
 ]
 
 HWY_TEST_COPTS = select({
@@ -385,6 +416,7 @@ HWY_TEST_DEPS = [
     ":math",
     ":nanobenchmark",
     ":skeleton",
+    ":unroller",
     "//hwy/contrib/sort:vqsort",
     "@com_google_googletest//:gtest_main",
 ]

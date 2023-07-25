@@ -18,17 +18,12 @@
 
 // Target-independent helper functions for use by *_test.cc.
 
-#include <stddef.h>
-#include <stdint.h>
 #include <string.h>
 
 #include <cmath>  // std::isnan
 #include <string>
 
-#include "hwy/aligned_allocator.h"
-#include "hwy/base.h"
 #include "hwy/highway.h"
-#include "hwy/highway_export.h"
 #include "hwy/print.h"
 
 namespace hwy {
@@ -73,8 +68,8 @@ static HWY_INLINE uint32_t Random32(RandomState* rng) {
 
 static HWY_INLINE uint64_t Random64(RandomState* rng) { return (*rng)(); }
 
-HWY_TEST_DLLEXPORT bool BytesEqual(const void* p1, const void* p2,
-                                   const size_t size, size_t* pos = nullptr);
+HWY_TEST_DLLEXPORT bool BytesEqual(const void* p1, const void* p2, size_t size,
+                                   size_t* pos = nullptr);
 
 void AssertStringEqual(const char* expected, const char* actual,
                        const char* target_name, const char* filename, int line);

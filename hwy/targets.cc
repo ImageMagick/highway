@@ -15,16 +15,11 @@
 
 #include "hwy/targets.h"
 
-#ifndef __STDC_FORMAT_MACROS
-#define __STDC_FORMAT_MACROS  // before inttypes.h
-#endif
-#include <inttypes.h>  // IWYU pragma: keep (PRIx64)
 #include <stdarg.h>
-#include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>  // abort / exit
 
+#include "hwy/highway.h"
 #include "hwy/per_target.h"  // VectorBytes
 
 #if HWY_IS_ASAN || HWY_IS_MSAN || HWY_IS_TSAN
@@ -137,8 +132,10 @@ enum class FeatureIndex : uint32_t {
 
   kAVX512F,
   kAVX512VL,
+  kAVX512CD,
   kAVX512DQ,
   kAVX512BW,
+  kAVX512FP16,
 
   kVNNI,
   kVPCLMULQDQ,
@@ -147,6 +144,7 @@ enum class FeatureIndex : uint32_t {
   kVAES,
   kPOPCNTDQ,
   kBITALG,
+  kGFNI,
 
   kSentinel
 };
@@ -191,16 +189,20 @@ uint64_t FlagsFromCPUID() {
 
     flags |= IsBitSet(abcd[1], 16) ? Bit(FeatureIndex::kAVX512F) : 0;
     flags |= IsBitSet(abcd[1], 17) ? Bit(FeatureIndex::kAVX512DQ) : 0;
+    flags |= IsBitSet(abcd[1], 28) ? Bit(FeatureIndex::kAVX512CD) : 0;
     flags |= IsBitSet(abcd[1], 30) ? Bit(FeatureIndex::kAVX512BW) : 0;
     flags |= IsBitSet(abcd[1], 31) ? Bit(FeatureIndex::kAVX512VL) : 0;
 
     flags |= IsBitSet(abcd[2], 1) ? Bit(FeatureIndex::kVBMI) : 0;
     flags |= IsBitSet(abcd[2], 6) ? Bit(FeatureIndex::kVBMI2) : 0;
+    flags |= IsBitSet(abcd[2], 8) ? Bit(FeatureIndex::kGFNI) : 0;
     flags |= IsBitSet(abcd[2], 9) ? Bit(FeatureIndex::kVAES) : 0;
     flags |= IsBitSet(abcd[2], 10) ? Bit(FeatureIndex::kVPCLMULQDQ) : 0;
     flags |= IsBitSet(abcd[2], 11) ? Bit(FeatureIndex::kVNNI) : 0;
     flags |= IsBitSet(abcd[2], 12) ? Bit(FeatureIndex::kBITALG) : 0;
     flags |= IsBitSet(abcd[2], 14) ? Bit(FeatureIndex::kPOPCNTDQ) : 0;
+
+    flags |= IsBitSet(abcd[3], 23) ? Bit(FeatureIndex::kAVX512FP16) : 0;
   }
 
   return flags;
@@ -211,8 +213,7 @@ constexpr uint64_t kGroupSSE2 =
     Bit(FeatureIndex::kSSE) | Bit(FeatureIndex::kSSE2);
 
 constexpr uint64_t kGroupSSSE3 =
-    Bit(FeatureIndex::kSSE3) | Bit(FeatureIndex::kSSSE3) |
-    kGroupSSE2;
+    Bit(FeatureIndex::kSSE3) | Bit(FeatureIndex::kSSSE3) | kGroupSSE2;
 
 constexpr uint64_t kGroupSSE4 =
     Bit(FeatureIndex::kSSE41) | Bit(FeatureIndex::kSSE42) |
@@ -242,13 +243,17 @@ constexpr uint64_t kGroupAVX2 =
 
 constexpr uint64_t kGroupAVX3 =
     Bit(FeatureIndex::kAVX512F) | Bit(FeatureIndex::kAVX512VL) |
-    Bit(FeatureIndex::kAVX512DQ) | Bit(FeatureIndex::kAVX512BW) | kGroupAVX2;
+    Bit(FeatureIndex::kAVX512DQ) | Bit(FeatureIndex::kAVX512BW) |
+    Bit(FeatureIndex::kAVX512CD) | kGroupAVX2;
 
 constexpr uint64_t kGroupAVX3_DL =
     Bit(FeatureIndex::kVNNI) | Bit(FeatureIndex::kVPCLMULQDQ) |
     Bit(FeatureIndex::kVBMI) | Bit(FeatureIndex::kVBMI2) |
     Bit(FeatureIndex::kVAES) | Bit(FeatureIndex::kPOPCNTDQ) |
-    Bit(FeatureIndex::kBITALG) | kGroupAVX3;
+    Bit(FeatureIndex::kBITALG) | Bit(FeatureIndex::kGFNI) | kGroupAVX3;
+
+constexpr uint64_t kGroupAVX3_SPR =
+    Bit(FeatureIndex::kAVX512FP16) | kGroupAVX3_DL;
 
 int64_t DetectTargets() {
   int64_t bits = 0;  // return value of supported targets.
@@ -258,6 +263,9 @@ int64_t DetectTargets() {
 
   const uint64_t flags = FlagsFromCPUID();
   // Set target bit(s) if all their group's flags are all set.
+  if ((flags & kGroupAVX3_SPR) == kGroupAVX3_SPR) {
+    bits |= HWY_AVX3_SPR;
+  }
   if ((flags & kGroupAVX3_DL) == kGroupAVX3_DL) {
     bits |= HWY_AVX3_DL;
   }
@@ -286,7 +294,7 @@ int64_t DetectTargets() {
   const bool has_osxsave = IsBitSet(abcd[2], 27);
   if (has_osxsave) {
     const uint32_t xcr0 = ReadXCR0();
-    const int64_t min_avx3 = HWY_AVX3 | HWY_AVX3_DL;
+    const int64_t min_avx3 = HWY_AVX3 | HWY_AVX3_DL | HWY_AVX3_SPR;
     const int64_t min_avx2 = HWY_AVX2 | min_avx3;
     // XMM
     if (!IsBitSet(xcr0, 1)) {
@@ -297,7 +305,7 @@ int64_t DetectTargets() {
       // preserved across context switches on x86_64
 
       // Only clear the AVX2/AVX3 bits on x86_64 if bit 1 of XCR0 is not set
-      bits &= min_avx2;
+      bits &= ~min_avx2;
 #else
       bits &= ~(HWY_SSE2 | HWY_SSSE3 | HWY_SSE4 | min_avx2);
 #endif
@@ -363,7 +371,7 @@ int64_t DetectTargets() {
 #endif
 
   // aarch32 would check getauxval(AT_HWCAP2) & HWCAP2_AES, but we do not yet
-  // support that platform, and Arm v7 lacks AES entirely. Because HWY_NEON
+  // support that platform, and Armv7 lacks AES entirely. Because HWY_NEON
   // requires native AES instructions, we do not enable that target here.
 
 #endif  // HWY_ARCH_ARM_A64
@@ -412,6 +420,8 @@ constexpr CapBits kGroupPPC10 = kGroupPPC9 | PPC_FEATURE2_ARCH_3_1;
 
 int64_t DetectTargets() {
   int64_t bits = 0;  // return value of supported targets.
+
+#if defined(AT_HWCAP) && defined(AT_HWCAP2)
   const CapBits hw = getauxval(AT_HWCAP);
 
   if ((hw & kGroupVSX) == kGroupVSX) {
@@ -426,6 +436,8 @@ int64_t DetectTargets() {
       bits |= HWY_PPC10;
     }
   }  // VSX
+#endif  // defined(AT_HWCAP) && defined(AT_HWCAP2)
+
   return bits;
 }
 }  // namespace ppc
@@ -455,10 +467,14 @@ int64_t DetectTargets() {
 #endif  // HWY_ARCH_*
 
   if ((bits & HWY_ENABLED_BASELINE) != HWY_ENABLED_BASELINE) {
+    const uint64_t bits_u = static_cast<uint64_t>(bits);
+    const uint64_t enabled = static_cast<uint64_t>(HWY_ENABLED_BASELINE);
     fprintf(stderr,
-            "WARNING: CPU supports %" PRIx64 " but software requires %" PRIx64
-            "\n",
-            bits, static_cast<int64_t>(HWY_ENABLED_BASELINE));
+            "WARNING: CPU supports 0x%08x%08x, software requires 0x%08x%08x\n",
+            static_cast<uint32_t>(bits_u >> 32),
+            static_cast<uint32_t>(bits_u & 0xFFFFFFFF),
+            static_cast<uint32_t>(enabled >> 32),
+            static_cast<uint32_t>(enabled & 0xFFFFFFFF));
   }
 
   return bits;

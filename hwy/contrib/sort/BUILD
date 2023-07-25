@@ -11,59 +11,75 @@ COMPAT = [
     "//buildenv/target:non_prod",  # includes mobile/vendor.
 ]
 
-# cc_library(
-#     name = "vxsort",
-#     srcs = [
-#         "vxsort/isa_detection.cpp",
-#         "vxsort/isa_detection_msvc.cpp",
-#         "vxsort/isa_detection_sane.cpp",
-#         "vxsort/machine_traits.avx2.cpp",
-#         "vxsort/smallsort/avx2_load_mask_tables.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX2.double.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX2.float.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX2.int32_t.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX2.int64_t.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX2.uint32_t.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX2.uint64_t.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX512.double.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX512.float.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX512.int32_t.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX512.int64_t.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX512.uint32_t.generated.cpp",
-#         "vxsort/smallsort/bitonic_sort.AVX512.uint64_t.generated.cpp",
-#         "vxsort/vxsort_stats.cpp",
-#     ],
-#     hdrs = [
-#         "vxsort/alignment.h",
-#         "vxsort/defs.h",
-#         "vxsort/isa_detection.h",
-#         "vxsort/machine_traits.avx2.h",
-#         "vxsort/machine_traits.avx512.h",
-#         "vxsort/machine_traits.h",
-#         "vxsort/packer.h",
-#         "vxsort/smallsort/bitonic_sort.AVX2.double.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX2.float.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX2.int32_t.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX2.int64_t.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX2.uint32_t.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX2.uint64_t.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX512.double.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX512.float.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX512.int32_t.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX512.int64_t.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX512.uint32_t.generated.h",
-#         "vxsort/smallsort/bitonic_sort.AVX512.uint64_t.generated.h",
-#         "vxsort/smallsort/bitonic_sort.h",
-#         "vxsort/vxsort.h",
-#         "vxsort/vxsort_stats.h",
-#     ],
-#     compatible_with = [],
-#     textual_hdrs = [
-#         "vxsort/vxsort_targets_disable.h",
-#         "vxsort/vxsort_targets_enable_avx2.h",
-#         "vxsort/vxsort_targets_enable_avx512.h",
-#     ],
-# )
+cc_library(
+    name = "intel",
+    # hdrs = select({
+    #     "//third_party/bazel_platforms/cpu:x86_64": [
+    #        "avx512-16bit-common.h",
+    #        "avx512-16bit-qsort.hpp",
+    #        "avx512-32bit-qsort.hpp",
+    #        "avx512-64bit-common.h",
+    #        "avx512-64bit-qsort.hpp",
+    #        "avx512-common-qsort.h",
+    #     ],
+    #     "//conditions:default": [],
+    # }),
+    compatible_with = [],
+)
+
+cc_library(
+    name = "vxsort",
+    srcs = [
+        # "vxsort/isa_detection.cpp",
+        # "vxsort/isa_detection_msvc.cpp",
+        # "vxsort/isa_detection_sane.cpp",
+        # "vxsort/machine_traits.avx2.cpp",
+        # "vxsort/smallsort/avx2_load_mask_tables.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX2.double.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX2.float.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX2.int32_t.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX2.int64_t.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX2.uint32_t.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX2.uint64_t.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX512.double.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX512.float.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX512.int32_t.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX512.int64_t.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX512.uint32_t.generated.cpp",
+        # "vxsort/smallsort/bitonic_sort.AVX512.uint64_t.generated.cpp",
+        # "vxsort/vxsort_stats.cpp",
+    ],
+    hdrs = [
+        # "vxsort/alignment.h",
+        # "vxsort/defs.h",
+        # "vxsort/isa_detection.h",
+        # "vxsort/machine_traits.avx2.h",
+        # "vxsort/machine_traits.avx512.h",
+        # "vxsort/machine_traits.h",
+        # "vxsort/packer.h",
+        # "vxsort/smallsort/bitonic_sort.AVX2.double.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX2.float.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX2.int32_t.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX2.int64_t.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX2.uint32_t.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX2.uint64_t.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX512.double.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX512.float.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX512.int32_t.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX512.int64_t.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX512.uint32_t.generated.h",
+        # "vxsort/smallsort/bitonic_sort.AVX512.uint64_t.generated.h",
+        # "vxsort/smallsort/bitonic_sort.h",
+        # "vxsort/vxsort.h",
+        # "vxsort/vxsort_stats.h",
+    ],
+    compatible_with = [],
+    textual_hdrs = [
+        # "vxsort/vxsort_targets_disable.h",
+        # "vxsort/vxsort_targets_enable_avx2.h",
+        # "vxsort/vxsort_targets_enable_avx512.h",
+    ],
+)
 
 cc_library(
     name = "vqsort",
@@ -72,6 +88,8 @@ cc_library(
         "vqsort.cc",
         "vqsort_128a.cc",
         "vqsort_128d.cc",
+        "vqsort_f16a.cc",
+        "vqsort_f16d.cc",
         "vqsort_f32a.cc",
         "vqsort_f32d.cc",
         "vqsort_f64a.cc",
@@ -94,6 +112,7 @@ cc_library(
         "vqsort_u64d.cc",
     ],
     hdrs = [
+        "order.h",  # part of public interface, included by vqsort.h
         "vqsort.h",  # public interface
     ],
     compatible_with = [],
@@ -107,10 +126,10 @@ cc_library(
         # Placeholder for internal instrumentation. Do not remove.
     ],
     deps = [
-        # Only if VQSORT_SECURE_RNG is set.
-        # "//third_party/absl/random",
+        ":intel",  # required if HAVE_INTEL
+        ":vxsort",  # required if HAVE_VXSORT
+        "//:algo",
         "//:hwy",
-        # ":vxsort",  # required if HAVE_VXSORT
     ],
 )
 
@@ -176,6 +195,7 @@ cc_test(
         "@com_google_googletest//:gtest_main",
         "//:hwy",
         "//:hwy_test_util",
+        "//:nanobenchmark",
     ],
 )
 

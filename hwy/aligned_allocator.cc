@@ -15,7 +15,6 @@
 
 #include "hwy/aligned_allocator.h"
 
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>  // malloc
@@ -28,7 +27,7 @@
 namespace hwy {
 namespace {
 
-#if HWY_ARCH_RVV && defined(__riscv_vector)
+#if HWY_ARCH_RVV && defined(__riscv_v_intrinsic) && __riscv_v_intrinsic >= 11000
 // Not actually an upper bound on the size, but this value prevents crossing a
 // 4K boundary (relevant on Andes).
 constexpr size_t kAlignment = HWY_MAX(HWY_ALIGNMENT, 4096);

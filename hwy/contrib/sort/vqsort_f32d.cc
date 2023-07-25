@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "hwy/contrib/sort/vqsort.h"
+#include "hwy/contrib/sort/vqsort.h"  // VQSort
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "hwy/contrib/sort/vqsort_f32d.cc"
@@ -27,11 +27,8 @@ HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
 
-void SortF32Desc(float* HWY_RESTRICT keys, size_t num,
-                 float* HWY_RESTRICT buf) {
-  SortTag<float> d;
-  detail::SharedTraits<detail::TraitsLane<detail::OrderDescending<float>>> st;
-  Sort(d, st, keys, num, buf);
+void SortF32Desc(float* HWY_RESTRICT keys, size_t num) {
+  return VQSortStatic(keys, num, SortDescending());
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
@@ -45,9 +42,8 @@ namespace {
 HWY_EXPORT(SortF32Desc);
 }  // namespace
 
-void Sorter::operator()(float* HWY_RESTRICT keys, size_t n,
-                        SortDescending) const {
-  HWY_DYNAMIC_DISPATCH(SortF32Desc)(keys, n, Get<float>());
+void VQSort(float* HWY_RESTRICT keys, size_t n, SortDescending) {
+  HWY_DYNAMIC_DISPATCH(SortF32Desc)(keys, n);
 }
 
 }  // namespace hwy

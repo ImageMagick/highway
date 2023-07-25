@@ -13,9 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <stddef.h>
-#include <stdint.h>
-
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "tests/reduction_test.cc"
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
@@ -42,16 +39,19 @@ struct TestSumOfLanes {
     Vec<decltype(d)> v =
         InterleaveLower(Set(d, static_cast<T>(-2)), Set(d, T{1}));
     HWY_ASSERT_VEC_EQ(d, Set(d, static_cast<T>(-pairs)), SumOfLanes(d, v));
+    HWY_ASSERT_EQ(static_cast<T>(-pairs), ReduceSum(d, v));
 
     // Similar test with a positive result.
     v = InterleaveLower(Set(d, static_cast<T>(-2)), Set(d, T{4}));
     HWY_ASSERT_VEC_EQ(d, Set(d, static_cast<T>(pairs * 2)), SumOfLanes(d, v));
+    HWY_ASSERT_EQ(static_cast<T>(pairs * 2), ReduceSum(d, v));
   }
 
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
     const size_t N = Lanes(d);
     auto in_lanes = AllocateAligned<T>(N);
+    HWY_ASSERT(in_lanes);
 
     // Lane i = bit i, higher lanes 0
     double sum = 0.0;
@@ -63,13 +63,14 @@ struct TestSumOfLanes {
     }
     HWY_ASSERT_VEC_EQ(d, Set(d, T(sum)),
                       SumOfLanes(d, Load(d, in_lanes.get())));
-
+    HWY_ASSERT_EQ(T(sum), ReduceSum(d, Load(d, in_lanes.get())));
     // Lane i = i (iota) to include upper lanes
     sum = 0.0;
     for (size_t i = 0; i < N; ++i) {
       sum += static_cast<double>(i);
     }
     HWY_ASSERT_VEC_EQ(d, Set(d, T(sum)), SumOfLanes(d, Iota(d, 0)));
+    HWY_ASSERT_EQ(T(sum), ReduceSum(d, Iota(d, 0)));
 
     // Run more tests only for signed types with even vector lengths. Some of
     // this code may not otherwise compile, so put it in a templated function.

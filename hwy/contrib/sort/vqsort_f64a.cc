@@ -13,30 +13,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "hwy/contrib/sort/vqsort.h"
+#include "hwy/contrib/sort/vqsort.h"  // VQSort
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "hwy/contrib/sort/vqsort_f64a.cc"
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 
 // After foreach_target
-#include "hwy/contrib/sort/traits-inl.h"
 #include "hwy/contrib/sort/vqsort-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
 
-void SortF64Asc(double* HWY_RESTRICT keys, size_t num,
-                double* HWY_RESTRICT buf) {
+void SortF64Asc(double* HWY_RESTRICT keys, size_t num) {
 #if HWY_HAVE_FLOAT64
-  SortTag<double> d;
-  detail::SharedTraits<detail::TraitsLane<detail::OrderAscending<double>>> st;
-  Sort(d, st, keys, num, buf);
+  return VQSortStatic(keys, num, SortAscending());
 #else
   (void)keys;
   (void)num;
-  (void)buf;
   HWY_ASSERT(0);
 #endif
 }
@@ -52,9 +47,8 @@ namespace {
 HWY_EXPORT(SortF64Asc);
 }  // namespace
 
-void Sorter::operator()(double* HWY_RESTRICT keys, size_t n,
-                        SortAscending) const {
-  HWY_DYNAMIC_DISPATCH(SortF64Asc)(keys, n, Get<double>());
+void VQSort(double* HWY_RESTRICT keys, size_t n, SortAscending) {
+  HWY_DYNAMIC_DISPATCH(SortF64Asc)(keys, n);
 }
 
 }  // namespace hwy

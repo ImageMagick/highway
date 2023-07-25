@@ -25,7 +25,7 @@ if(POLICY CMP0111)
   cmake_policy(SET CMP0111 OLD)
 endif()
 
-project(hwy VERSION 1.0.4)  # Keep in sync with highway.h version
+project(hwy VERSION 1.0.5)  # Keep in sync with highway.h version
 # `hwy` is lowercase to handle find_package() in Config mode:
 set(namespace "${PROJECT_NAME}::")
 
@@ -54,7 +54,12 @@ if (NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
-set(HWY_CMAKE_ARM7 OFF CACHE BOOL "Set copts for ARMv7 with NEON (requires vfpv4)?")
+# The following is only required with GCC < 6.1.0 or CLANG < 16.0
+set(HWY_CMAKE_ARM7 OFF CACHE BOOL "Set copts for Armv7 with NEON (requires vfpv4)?")
+
+# This must be set on 32-bit x86 with GCC < 13.1, otherwise math_test will be
+# skipped. For GCC 13.1+, you can also build with -fexcess-precision=standard.
+set(HWY_CMAKE_SSE2 OFF CACHE BOOL "Set SSE2 as baseline for 32-bit x86?")
 
 # Unconditionally adding -Werror risks breaking the build when new warnings
 # arise due to compiler/platform changes. Enable this in CI/tests.
@@ -95,6 +100,7 @@ list(APPEND HWY_CONTRIB_SOURCES
     hwy/contrib/image/image.cc
     hwy/contrib/image/image.h
     hwy/contrib/math/math-inl.h
+    hwy/contrib/sort/order.h
     hwy/contrib/sort/shared-inl.h
     hwy/contrib/sort/sorting_networks-inl.h
     hwy/contrib/sort/traits-inl.h
@@ -105,6 +111,7 @@ list(APPEND HWY_CONTRIB_SOURCES
     hwy/contrib/algo/copy-inl.h
     hwy/contrib/algo/find-inl.h
     hwy/contrib/algo/transform-inl.h
+    hwy/contrib/unroller/unroller-inl.h
 )
 endif()  # HWY_ENABLE_CONTRIB
 
@@ -130,6 +137,7 @@ set(HWY_SOURCES
     hwy/ops/set_macros-inl.h
     hwy/ops/shared-inl.h
     hwy/ops/wasm_128-inl.h
+    hwy/ops/tuple-inl.h
     hwy/ops/x86_128-inl.h
     hwy/ops/x86_256-inl.h
     hwy/ops/x86_512-inl.h
@@ -138,8 +146,12 @@ set(HWY_SOURCES
     hwy/print-inl.h
     hwy/print.cc
     hwy/print.h
+    hwy/robust_statistics.h
     hwy/targets.cc
     hwy/targets.h
+    hwy/timer.cc
+    hwy/timer.h
+    hwy/timer-inl.h
 )
 
 set(HWY_TEST_SOURCES
@@ -230,6 +242,11 @@ else()
     )
   endif()  # WIN32
 
+  # Workaround for excess precision, see #1488.
+  if (HWY_CMAKE_SSE2)
+    list(APPEND HWY_FLAGS -msse2 -mfpmath=sse)
+  endif()
+
   if (HWY_CMAKE_ARM7)
     list(APPEND HWY_FLAGS
       -march=armv7-a
@@ -264,9 +281,6 @@ endif()  # !MSVC
 include(CheckIncludeFile)
 check_include_file(sys/auxv.h  HAVE_SYS_AUXV_H)
 check_include_file(asm/hwcap.h HAVE_ASM_HWCAP_H)
-if (NOT HAVE_ASM_HWCAP_H)
-  list(APPEND HWY_FLAGS -DTOOLCHAIN_MISS_ASM_HWCAP_H)
-endif()
 
 # By default prefer STATIC build (legacy behavior)
 option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
@@ -295,6 +309,9 @@ add_library(hwy ${HWY_LIBRARY_TYPE} ${HWY_SOURCES})
 if(NOT HAVE_SYS_AUXV_H)
   target_compile_definitions(hwy PUBLIC TOOLCHAIN_MISS_SYS_AUXV_H)
 endif()
+if(NOT HAVE_ASM_HWCAP_H)
+  target_compile_definitions(hwy PUBLIC TOOLCHAIN_MISS_ASM_HWCAP_H)
+endif()
 target_compile_definitions(hwy PUBLIC "${DLLEXPORT_TO_DEFINE}")
 target_compile_options(hwy PRIVATE ${HWY_FLAGS})
 set_property(TARGET hwy PROPERTY POSITION_INDEPENDENT_CODE ON)
@@ -315,7 +332,7 @@ endif()
 
 if (HWY_ENABLE_CONTRIB)
 add_library(hwy_contrib ${HWY_LIBRARY_TYPE} ${HWY_CONTRIB_SOURCES})
-target_link_libraries(hwy_contrib hwy)
+target_link_libraries(hwy_contrib PUBLIC hwy)
 target_compile_options(hwy_contrib PRIVATE ${HWY_FLAGS})
 set_property(TARGET hwy_contrib PROPERTY POSITION_INDEPENDENT_CODE ON)
 set_target_properties(hwy_contrib PROPERTIES VERSION ${LIBRARY_VERSION} SOVERSION ${LIBRARY_SOVERSION})
@@ -325,6 +342,8 @@ target_include_directories(hwy_contrib PUBLIC
 target_compile_features(hwy_contrib PUBLIC cxx_std_11)
 set_target_properties(hwy_contrib PROPERTIES
   LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/hwy/hwy.version)
+# For GCC __atomic_store_8, see #887
+target_link_libraries(hwy_contrib PRIVATE ${ATOMICS_LIBRARIES})
 # not supported by MSVC/Clang, safe to skip (we use DLLEXPORT annotations)
 if(UNIX AND NOT APPLE)
   set_property(TARGET hwy_contrib APPEND_STRING PROPERTY
@@ -333,7 +352,7 @@ endif()
 endif()  # HWY_ENABLE_CONTRIB
 
 add_library(hwy_test ${HWY_LIBRARY_TYPE} ${HWY_TEST_SOURCES})
-target_link_libraries(hwy_test hwy)
+target_link_libraries(hwy_test PUBLIC hwy)
 target_compile_options(hwy_test PRIVATE ${HWY_FLAGS})
 set_property(TARGET hwy_test PROPERTY POSITION_INDEPENDENT_CODE ON)
 set_target_properties(hwy_test PROPERTIES VERSION ${LIBRARY_VERSION} SOVERSION ${LIBRARY_SOVERSION})
@@ -354,7 +373,7 @@ endif()
 # flags. This tool will print to stderr at build time, after building hwy.
 add_executable(hwy_list_targets hwy/tests/list_targets.cc)
 target_compile_options(hwy_list_targets PRIVATE ${HWY_FLAGS})
-target_link_libraries(hwy_list_targets hwy)
+target_link_libraries(hwy_list_targets PRIVATE hwy)
 target_include_directories(hwy_list_targets PRIVATE
   $<TARGET_PROPERTY:hwy,INCLUDE_DIRECTORIES>)
 # TARGET_FILE always returns the path to executable
@@ -443,7 +462,8 @@ target_sources(hwy_benchmark PRIVATE
 # Try adding one of -DHWY_COMPILE_ONLY_SCALAR, -DHWY_COMPILE_ONLY_EMU128 or
 # -DHWY_COMPILE_ONLY_STATIC to observe the difference in targets printed.
 target_compile_options(hwy_benchmark PRIVATE ${HWY_FLAGS})
-target_link_libraries(hwy_benchmark hwy)
+target_link_libraries(hwy_benchmark PRIVATE hwy)
+target_link_libraries(hwy_benchmark PRIVATE ${ATOMICS_LIBRARIES})
 set_target_properties(hwy_benchmark
     PROPERTIES RUNTIME_OUTPUT_DIRECTORY "examples/")
 
@@ -497,12 +517,13 @@ set(HWY_TEST_FILES
   hwy/targets_test.cc
   hwy/examples/skeleton_test.cc
   hwy/tests/arithmetic_test.cc
-  hwy/tests/blockwise_test.cc
   hwy/tests/blockwise_shift_test.cc
+  hwy/tests/blockwise_test.cc
   hwy/tests/combine_test.cc
   hwy/tests/compare_test.cc
   hwy/tests/compress_test.cc
   hwy/tests/convert_test.cc
+  hwy/tests/count_test.cc
   hwy/tests/crypto_test.cc
   hwy/tests/demote_test.cc
   hwy/tests/expand_test.cc
@@ -510,15 +531,20 @@ set(HWY_TEST_FILES
   hwy/tests/if_test.cc
   hwy/tests/interleaved_test.cc
   hwy/tests/logical_test.cc
-  hwy/tests/mask_test.cc
   hwy/tests/mask_mem_test.cc
+  hwy/tests/mask_test.cc
   hwy/tests/memory_test.cc
   hwy/tests/mul_test.cc
   hwy/tests/reduction_test.cc
+  hwy/tests/resize_test.cc
   hwy/tests/reverse_test.cc
   hwy/tests/shift_test.cc
+  hwy/tests/slide_up_down_test.cc
+  hwy/tests/swizzle_block_test.cc
   hwy/tests/swizzle_test.cc
+  hwy/tests/table_test.cc
   hwy/tests/test_util_test.cc
+  hwy/tests/tuple_test.cc
 )
 
 set(HWY_TEST_LIBS hwy hwy_test)
@@ -531,9 +557,10 @@ list(APPEND HWY_TEST_FILES
   hwy/contrib/image/image_test.cc
   # Disabled due to SIGILL in clang7 debug build during gtest discovery phase,
   # not reproducible locally. Still tested via bazel build.
-  # hwy/contrib/math/math_test.cc
+  hwy/contrib/math/math_test.cc
   hwy/contrib/sort/sort_test.cc
   hwy/contrib/sort/bench_sort.cc
+  hwy/contrib/unroller/unroller_test.cc
 )
 endif()  # HWY_ENABLE_CONTRIB
 

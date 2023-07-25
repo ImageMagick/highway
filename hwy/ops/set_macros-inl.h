@@ -26,7 +26,8 @@
 
 #endif  // HWY_SET_MACROS_PER_TARGET
 
-#include "hwy/detect_targets.h"
+#include "hwy/detect_compiler_arch.h"  // IWYU: export
+#include "hwy/detect_targets.h"        // IWYU: export
 
 #undef HWY_NAMESPACE
 #undef HWY_ALIGN
@@ -34,6 +35,7 @@
 #undef HWY_LANES
 
 #undef HWY_HAVE_SCALABLE
+#undef HWY_HAVE_TUPLE
 #undef HWY_HAVE_INTEGER64
 #undef HWY_HAVE_FLOAT16
 #undef HWY_HAVE_FLOAT64
@@ -41,6 +43,14 @@
 #undef HWY_NATIVE_FMA
 #undef HWY_CAP_GE256
 #undef HWY_CAP_GE512
+
+// Supported on all targets except RVV (requires GCC 14 or upcoming Clang)
+#if HWY_TARGET == HWY_RVV && \
+    (HWY_COMPILER_GCC_ACTUAL < 1400 || HWY_COMPILER_CLANG)
+#define HWY_HAVE_TUPLE 0
+#else
+#define HWY_HAVE_TUPLE 1
+#endif
 
 // For internal use (clamping/validating N for Simd<>)
 #undef HWY_MAX_N
@@ -99,11 +109,13 @@
 #define HWY_TARGET_STR_AVX2 \
   HWY_TARGET_STR_SSE4 ",avx,avx2" HWY_TARGET_STR_BMI2_FMA HWY_TARGET_STR_F16C
 #define HWY_TARGET_STR_AVX3 \
-  HWY_TARGET_STR_AVX2 ",avx512f,avx512vl,avx512dq,avx512bw"
-#define HWY_TARGET_STR_AVX3_DL                                    \
-  HWY_TARGET_STR_AVX3                                             \
+  HWY_TARGET_STR_AVX2 ",avx512f,avx512cd,avx512vl,avx512dq,avx512bw"
+#define HWY_TARGET_STR_AVX3_DL                                       \
+  HWY_TARGET_STR_AVX3                                                \
   ",vpclmulqdq,avx512vbmi,avx512vbmi2,vaes,avx512vnni,avx512bitalg," \
-  "avx512vpopcntdq"
+  "avx512vpopcntdq,gfni"
+
+#define HWY_TARGET_STR_AVX3_SPR HWY_TARGET_STR_AVX3_DL ",avx512fp16"
 
 #if defined(HWY_DISABLE_PPC8_CRYPTO)
 #define HWY_TARGET_STR_PPC8_CRYPTO ""
@@ -135,7 +147,7 @@
 
 #define HWY_HAVE_SCALABLE 0
 #define HWY_HAVE_INTEGER64 1
-#define HWY_HAVE_FLOAT16 1
+#define HWY_HAVE_FLOAT16 0
 #define HWY_HAVE_FLOAT64 1
 #define HWY_MEM_OPS_MIGHT_FAULT 1
 #define HWY_NATIVE_FMA 0
@@ -154,7 +166,7 @@
 
 #define HWY_HAVE_SCALABLE 0
 #define HWY_HAVE_INTEGER64 1
-#define HWY_HAVE_FLOAT16 1
+#define HWY_HAVE_FLOAT16 0
 #define HWY_HAVE_FLOAT64 1
 #define HWY_MEM_OPS_MIGHT_FAULT 1
 #define HWY_NATIVE_FMA 0
@@ -174,7 +186,7 @@
 
 #define HWY_HAVE_SCALABLE 0
 #define HWY_HAVE_INTEGER64 1
-#define HWY_HAVE_FLOAT16 1
+#define HWY_HAVE_FLOAT16 0
 #define HWY_HAVE_FLOAT64 1
 #define HWY_MEM_OPS_MIGHT_FAULT 1
 #define HWY_NATIVE_FMA 0
@@ -194,7 +206,7 @@
 
 #define HWY_HAVE_SCALABLE 0
 #define HWY_HAVE_INTEGER64 1
-#define HWY_HAVE_FLOAT16 1
+#define HWY_HAVE_FLOAT16 0
 #define HWY_HAVE_FLOAT64 1
 #define HWY_MEM_OPS_MIGHT_FAULT 1
 
@@ -212,7 +224,7 @@
 //-----------------------------------------------------------------------------
 // AVX3[_DL]
 #elif HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL || \
-    HWY_TARGET == HWY_AVX3_ZEN4
+    HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR
 
 #define HWY_ALIGN alignas(64)
 #define HWY_MAX_BYTES 64
@@ -220,7 +232,11 @@
 
 #define HWY_HAVE_SCALABLE 0
 #define HWY_HAVE_INTEGER64 1
+#if (HWY_TARGET == HWY_AVX3_SPR) && 0  // TODO(janwas): enable when implemented
 #define HWY_HAVE_FLOAT16 1
+#else
+#define HWY_HAVE_FLOAT16 0
+#endif
 #define HWY_HAVE_FLOAT64 1
 #define HWY_MEM_OPS_MIGHT_FAULT 0
 #define HWY_NATIVE_FMA 1
@@ -243,9 +259,14 @@
 // Currently the same as HWY_AVX3_DL: both support Icelake.
 #define HWY_TARGET_STR HWY_TARGET_STR_AVX3_DL
 
+#elif HWY_TARGET == HWY_AVX3_SPR
+
+#define HWY_NAMESPACE N_AVX3_SPR
+#define HWY_TARGET_STR HWY_TARGET_STR_AVX3_SPR
+
 #else
 #error "Logic error"
-#endif  // HWY_TARGET == HWY_AVX3_ZEN4
+#endif  // HWY_TARGET
 
 //-----------------------------------------------------------------------------
 // PPC8, PPC9, PPC10
@@ -294,7 +315,11 @@
 
 #define HWY_HAVE_SCALABLE 0
 #define HWY_HAVE_INTEGER64 1
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
 #define HWY_HAVE_FLOAT16 1
+#else
+#define HWY_HAVE_FLOAT16 0
+#endif
 
 #if HWY_ARCH_ARM_A64
 #define HWY_HAVE_FLOAT64 1
@@ -360,7 +385,7 @@
 #define HWY_LANES(T) ((HWY_MAX_BYTES) / sizeof(T))
 
 #define HWY_HAVE_INTEGER64 1
-#define HWY_HAVE_FLOAT16 1
+#define HWY_HAVE_FLOAT16 0
 #define HWY_HAVE_FLOAT64 1
 #define HWY_MEM_OPS_MIGHT_FAULT 0
 #define HWY_NATIVE_FMA 1
@@ -406,7 +431,7 @@
 
 #define HWY_HAVE_SCALABLE 0
 #define HWY_HAVE_INTEGER64 1
-#define HWY_HAVE_FLOAT16 1
+#define HWY_HAVE_FLOAT16 0
 #define HWY_HAVE_FLOAT64 0
 #define HWY_MEM_OPS_MIGHT_FAULT 1
 #define HWY_NATIVE_FMA 0
@@ -427,7 +452,7 @@
 
 #define HWY_HAVE_SCALABLE 0
 #define HWY_HAVE_INTEGER64 1
-#define HWY_HAVE_FLOAT16 1
+#define HWY_HAVE_FLOAT16 0
 #define HWY_HAVE_FLOAT64 0
 #define HWY_MEM_OPS_MIGHT_FAULT 1
 #define HWY_NATIVE_FMA 0
@@ -482,7 +507,7 @@
 
 #define HWY_HAVE_SCALABLE 0
 #define HWY_HAVE_INTEGER64 1
-#define HWY_HAVE_FLOAT16 1
+#define HWY_HAVE_FLOAT16 0
 #define HWY_HAVE_FLOAT64 1
 #define HWY_MEM_OPS_MIGHT_FAULT 1
 #define HWY_NATIVE_FMA 0
@@ -503,7 +528,7 @@
 
 #define HWY_HAVE_SCALABLE 0
 #define HWY_HAVE_INTEGER64 1
-#define HWY_HAVE_FLOAT16 1
+#define HWY_HAVE_FLOAT16 0
 #define HWY_HAVE_FLOAT64 1
 #define HWY_MEM_OPS_MIGHT_FAULT 0
 #define HWY_NATIVE_FMA 0

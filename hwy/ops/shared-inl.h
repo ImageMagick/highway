@@ -15,6 +15,27 @@
 
 // Per-target definitions shared by ops/*.h and user code.
 
+// IWYU pragma: begin_exports
+// Export does not seem to be recursive, so re-export these (also in base.h)
+#include <stddef.h>
+
+#include "hwy/base.h"
+// "IWYU pragma: keep" does not work for this include, so hide it from the IDE.
+#if !HWY_IDE
+#include <stdint.h>
+#endif
+
+#include "hwy/detect_compiler_arch.h"
+
+// Separate header because foreach_target.h re-enables its include guard.
+#include "hwy/ops/set_macros-inl.h"
+
+// IWYU pragma: end_exports
+
+#if HWY_IS_MSAN
+#include <sanitizer/msan_interface.h>
+#endif
+
 // We are covered by the highway.h include guard, but generic_ops-inl.h
 // includes this again #if HWY_IDE.
 #if defined(HIGHWAY_HWY_OPS_SHARED_TOGGLE) == \
@@ -25,15 +46,6 @@
 #define HIGHWAY_HWY_OPS_SHARED_TOGGLE
 #endif
 
-#ifndef HWY_NO_LIBCXX
-#include <math.h>
-#endif
-
-#include "hwy/base.h"
-
-// Separate header because foreach_target.h re-enables its include guard.
-#include "hwy/ops/set_macros-inl.h"
-
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
@@ -42,10 +54,10 @@ namespace HWY_NAMESPACE {
 // functions in two situations:
 // - on Windows and GCC 10.3, passing by value crashes due to unaligned loads:
 //   https://gcc.gnu.org/bugzilla/show_bug.cgi?id=54412.
-// - on ARM64 and GCC 9.3.0 or 11.2.1, passing by value causes many (but not
+// - on aarch64 and GCC 9.3.0 or 11.2.1, passing by value causes many (but not
 //   all) tests to fail.
 //
-// We therefore pass by const& only on GCC and (Windows or ARM64). This alias
+// We therefore pass by const& only on GCC and (Windows or aarch64). This alias
 // must be used for all vector/mask parameters of functions marked HWY_NOINLINE,
 // and possibly also other functions that are not inlined.
 #if HWY_COMPILER_GCC_ACTUAL && (HWY_OS_WIN || HWY_ARCH_ARM_A64)
@@ -57,11 +69,23 @@ using VecArg = V;
 #endif
 
 namespace detail {
+
 // Returns N * 2^pow2. N is the number of lanes in a full vector and pow2 the
 // desired fraction or multiple of it, see Simd<>. `pow2` is most often in
 // [-3, 3] but can also be lower for user-specified fractions.
 constexpr size_t ScaleByPower(size_t N, int pow2) {
   return pow2 >= 0 ? (N << pow2) : (N >> (-pow2));
+}
+
+template <typename T>
+HWY_INLINE void MaybeUnpoison(T* HWY_RESTRICT unaligned, size_t count) {
+  // Workaround for MSAN not marking compressstore as initialized (b/233326619)
+#if HWY_IS_MSAN
+  __msan_unpoison(unaligned, count * sizeof(T));
+#else
+  (void)unaligned;
+  (void)count;
+#endif
 }
 
 }  // namespace detail
@@ -144,6 +168,7 @@ struct Simd {
 
   constexpr size_t MaxLanes() const { return kPrivateLanes; }
   constexpr size_t MaxBytes() const { return kPrivateLanes * sizeof(Lane); }
+  constexpr size_t MaxBlocks() const { return (MaxBytes() + 15) / 16; }
   // For SFINAE on RVV.
   constexpr int Pow2() const { return kPow2; }
 
@@ -273,6 +298,18 @@ using ScalableTag = typename detail::ScalableTagChecker<T, kPow2>::type;
 template <typename T, size_t kLimit, int kPow2 = 0>
 using CappedTag = typename detail::CappedTagChecker<T, kLimit, kPow2>::type;
 
+#if !HWY_HAVE_SCALABLE
+// If the vector size is known, and the app knows it does not want more than
+// kLimit lanes, then capping can be beneficial. For example, AVX-512 has lower
+// IPC and potentially higher costs for unaligned load/store vs. 256-bit AVX2.
+template <typename T, size_t kLimit, int kPow2 = 0>
+using CappedTagIfFixed = CappedTag<T, kLimit, kPow2>;
+#else  // HWY_HAVE_SCALABLE
+// .. whereas on RVV/SVE, the cost of clamping Lanes() may exceed the benefit.
+template <typename T, size_t kLimit, int kPow2 = 0>
+using CappedTagIfFixed = ScalableTag<T, kPow2>;
+#endif
+
 // Alias for a tag describing a vector with *exactly* kNumLanes active lanes,
 // even on targets with scalable vectors. Requires `kNumLanes` to be a power of
 // two not exceeding `HWY_LANES(T)`.
@@ -362,6 +399,34 @@ using Half = typename D::Half;
 template <class D>
 using Twice = typename D::Twice;
 
+// Tag for a 16-byte block with the same lane type as D
+#if HWY_HAVE_SCALABLE
+namespace detail {
+
+template <class D>
+class BlockDFromD_t {};
+
+template <typename T, size_t N, int kPow2>
+class BlockDFromD_t<Simd<T, N, kPow2>> {
+  using D = Simd<T, N, kPow2>;
+  static constexpr int kNewPow2 = HWY_MIN(kPow2, 0);
+  static constexpr size_t kMaxLpb = HWY_MIN(16 / sizeof(T), HWY_MAX_LANES_D(D));
+  static constexpr size_t kNewN = D::template NewN<kNewPow2, kMaxLpb>();
+
+ public:
+  using type = Simd<T, kNewN, kNewPow2>;
+};
+
+}  // namespace detail
+
+template <class D>
+using BlockDFromD = typename detail::BlockDFromD_t<RemoveConst<D>>::type;
+#else
+template <class D>
+using BlockDFromD =
+    Simd<TFromD<D>, HWY_MIN(16 / sizeof(TFromD<D>), HWY_MAX_LANES_D(D)), 0>;
+#endif
+
 // ------------------------------ Choosing overloads (SFINAE)
 
 // Same as base.h macros but with a Simd<T, N, kPow2> argument instead of T.
@@ -369,7 +434,11 @@ using Twice = typename D::Twice;
 #define HWY_IF_SIGNED_D(D) HWY_IF_SIGNED(TFromD<D>)
 #define HWY_IF_FLOAT_D(D) HWY_IF_FLOAT(TFromD<D>)
 #define HWY_IF_NOT_FLOAT_D(D) HWY_IF_NOT_FLOAT(TFromD<D>)
+#define HWY_IF_SPECIAL_FLOAT_D(D) HWY_IF_SPECIAL_FLOAT(TFromD<D>)
 #define HWY_IF_NOT_SPECIAL_FLOAT_D(D) HWY_IF_NOT_SPECIAL_FLOAT(TFromD<D>)
+#define HWY_IF_FLOAT_OR_SPECIAL_D(D) HWY_IF_FLOAT_OR_SPECIAL(TFromD<D>)
+#define HWY_IF_NOT_FLOAT_NOR_SPECIAL_D(D) \
+  HWY_IF_NOT_FLOAT_NOR_SPECIAL(TFromD<D>)
 
 #define HWY_IF_T_SIZE_D(D, bytes) HWY_IF_T_SIZE(TFromD<D>, bytes)
 #define HWY_IF_NOT_T_SIZE_D(D, bytes) HWY_IF_NOT_T_SIZE(TFromD<D>, bytes)
@@ -406,8 +475,9 @@ using Twice = typename D::Twice;
                 IsSame<TFromD<D>, int64_t>()>* = nullptr
 
 #define HWY_IF_BF16_D(D) \
-  hwy::EnableIf<IsSame<TFromD<D>, bfloat16_t>()>* = nullptr
-#define HWY_IF_F16_D(D) hwy::EnableIf<IsSame<TFromD<D>, float16_t>()>* = nullptr
+  hwy::EnableIf<IsSame<TFromD<D>, hwy::bfloat16_t>()>* = nullptr
+#define HWY_IF_F16_D(D) \
+  hwy::EnableIf<IsSame<TFromD<D>, hwy::float16_t>()>* = nullptr
 #define HWY_IF_F32_D(D) hwy::EnableIf<IsSame<TFromD<D>, float>()>* = nullptr
 #define HWY_IF_F64_D(D) hwy::EnableIf<IsSame<TFromD<D>, double>()>* = nullptr
 
@@ -423,13 +493,22 @@ using Twice = typename D::Twice;
 #define HWY_IF_SIGNED_V(V) HWY_IF_SIGNED(TFromV<V>)
 #define HWY_IF_FLOAT_V(V) HWY_IF_FLOAT(TFromV<V>)
 #define HWY_IF_NOT_FLOAT_V(V) HWY_IF_NOT_FLOAT(TFromV<V>)
-#define HWY_IF_NOT_FLOAT_NOR_SPECIAL_V(V) HWY_IF_NOT_FLOAT_NOR_SPECIAL(TFromV<V>)
+#define HWY_IF_SPECIAL_FLOAT_V(V) HWY_IF_SPECIAL_FLOAT(TFromV<V>)
+#define HWY_IF_NOT_FLOAT_NOR_SPECIAL_V(V) \
+  HWY_IF_NOT_FLOAT_NOR_SPECIAL(TFromV<V>)
+
 #define HWY_IF_T_SIZE_V(V, bytes) HWY_IF_T_SIZE(TFromV<V>, bytes)
 #define HWY_IF_NOT_T_SIZE_V(V, bytes) HWY_IF_NOT_T_SIZE(TFromV<V>, bytes)
 #define HWY_IF_T_SIZE_ONE_OF_V(V, bit_array) \
   HWY_IF_T_SIZE_ONE_OF(TFromV<V>, bit_array)
+
+#define HWY_MAX_LANES_V(V) HWY_MAX_LANES_D(DFromV<V>)
 #define HWY_IF_V_SIZE_V(V, bytes) \
-  HWY_IF_V_SIZE(TFromV<V>, HWY_MAX_LANES_D(DFromV<V>), bytes)
+  HWY_IF_V_SIZE(TFromV<V>, HWY_MAX_LANES_V(V), bytes)
+#define HWY_IF_V_SIZE_LE_V(V, bytes) \
+  HWY_IF_V_SIZE_LE(TFromV<V>, HWY_MAX_LANES_V(V), bytes)
+#define HWY_IF_V_SIZE_GT_V(V, bytes) \
+  HWY_IF_V_SIZE_GT(TFromV<V>, HWY_MAX_LANES_V(V), bytes)
 
 // Old names (deprecated)
 #define HWY_IF_LANE_SIZE_D(D, bytes) HWY_IF_T_SIZE_D(D, bytes)

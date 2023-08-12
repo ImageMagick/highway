@@ -25,7 +25,7 @@ if(POLICY CMP0111)
   cmake_policy(SET CMP0111 OLD)
 endif()
 
-project(hwy VERSION 1.0.5)  # Keep in sync with highway.h version
+project(hwy VERSION 1.0.6)  # Keep in sync with highway.h version
 # `hwy` is lowercase to handle find_package() in Config mode:
 set(namespace "${PROJECT_NAME}::")
 
@@ -422,6 +422,7 @@ foreach (source ${HWY_CONTRIB_SOURCES})
 endforeach()
 endif()  # HWY_ENABLE_CONTRIB
 
+if (HWY_ENABLE_TESTS)
 install(TARGETS hwy_test EXPORT hwy_targets
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
@@ -435,13 +436,17 @@ foreach (source ${HWY_TEST_SOURCES})
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/${dirname}")
   endif()
 endforeach()
+endif()  # HWY_ENABLE_TESTS
 
 # Add a pkg-config file for libhwy and the contrib/test libraries.
 set(HWY_LIBRARY_VERSION "${CMAKE_PROJECT_VERSION}")
-set(HWY_PC_FILES libhwy.pc libhwy-test.pc)
+set(HWY_PC_FILES libhwy.pc)
 if (HWY_ENABLE_CONTRIB)
 list(APPEND HWY_PC_FILES libhwy-contrib.pc)
 endif()  # HWY_ENABLE_CONTRIB
+if (HWY_ENABLE_TESTS)
+list(APPEND HWY_PC_FILES libhwy-test.pc)
+endif()  # HWY_ENABLE_TESTS
 foreach (pc ${HWY_PC_FILES})
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/${pc}.in" "${pc}" @ONLY)
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${pc}"
@@ -519,6 +524,7 @@ set(HWY_TEST_FILES
   hwy/tests/arithmetic_test.cc
   hwy/tests/blockwise_shift_test.cc
   hwy/tests/blockwise_test.cc
+  hwy/tests/cast_test.cc
   hwy/tests/combine_test.cc
   hwy/tests/compare_test.cc
   hwy/tests/compress_test.cc
@@ -539,6 +545,7 @@ set(HWY_TEST_FILES
   hwy/tests/resize_test.cc
   hwy/tests/reverse_test.cc
   hwy/tests/shift_test.cc
+  hwy/tests/shuffle4_test.cc
   hwy/tests/slide_up_down_test.cc
   hwy/tests/swizzle_block_test.cc
   hwy/tests/swizzle_test.cc

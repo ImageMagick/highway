@@ -61,7 +61,7 @@
 // --------------------------- x86: 15 targets (+ one fallback)
 // Bits 0..3 reserved (4 targets)
 #define HWY_AVX3_SPR (1LL << 4)
-// Bit 5 reserved
+// Bit 5 reserved (likely AVX10.2 with 256-bit vectors)
 // Currently HWY_AVX3_DL plus a special case for CompressStore (10x as fast).
 // We may later also use VPCONFLICT.
 #define HWY_AVX3_ZEN4 (1LL << 6)  // see HWY_WANT_AVX3_ZEN4 below
@@ -167,16 +167,19 @@
 #define HWY_BROKEN_MSVC 0
 #endif
 
-// AVX3_DL and AVX3_ZEN4 require clang >= 7 (ensured above) or gcc >= 8.1.
-#if (HWY_COMPILER_GCC_ACTUAL && HWY_COMPILER_GCC_ACTUAL < 801)
+// AVX3_DL and AVX3_ZEN4 require clang >= 7 (ensured above), gcc >= 8.1 or ICC
+// 2021.
+#if (HWY_COMPILER_GCC_ACTUAL && HWY_COMPILER_GCC_ACTUAL < 801) || \
+    (HWY_COMPILER_ICC && HWY_COMPILER_ICC < 2021)
 #define HWY_BROKEN_AVX3_DL_ZEN4 (HWY_AVX3_DL | HWY_AVX3_ZEN4)
 #else
 #define HWY_BROKEN_AVX3_DL_ZEN4 0
 #endif
 
-// AVX3_SPR requires clang >= 14 or gcc >= 12.
-#if (HWY_COMPILER_CLANG != 0 && HWY_COMPILER_CLANG < 1400) || \
-    (HWY_COMPILER_GCC_ACTUAL && HWY_COMPILER_GCC_ACTUAL < 1200)
+// AVX3_SPR requires clang >= 14, gcc >= 12, or ICC 2021.
+#if (HWY_COMPILER_CLANG != 0 && HWY_COMPILER_CLANG < 1400) ||      \
+    (HWY_COMPILER_GCC_ACTUAL && HWY_COMPILER_GCC_ACTUAL < 1200) || \
+    (HWY_COMPILER_ICC && HWY_COMPILER_ICC < 2021)
 #define HWY_BROKEN_AVX3_SPR (HWY_AVX3_SPR)
 #else
 #define HWY_BROKEN_AVX3_SPR 0
@@ -212,9 +215,9 @@
 // GCC 10 supports the -mcpu=power10 option but does not support the PPC10
 // vector intrinsics
 #define HWY_BROKEN_PPC10 (HWY_PPC10)
-#elif HWY_ARCH_PPC && HWY_IS_BIG_ENDIAN &&                                    \
-    ((HWY_COMPILER3_CLANG && HWY_COMPILER3_CLANG < 160001) ||                 \
-     (HWY_COMPILER_GCC_ACTUAL >= 1200 && HWY_COMPILER_GCC_ACTUAL <= 1203) ||  \
+#elif HWY_ARCH_PPC && HWY_IS_BIG_ENDIAN &&                                   \
+    ((HWY_COMPILER3_CLANG && HWY_COMPILER3_CLANG < 160001) ||                \
+     (HWY_COMPILER_GCC_ACTUAL >= 1200 && HWY_COMPILER_GCC_ACTUAL <= 1203) || \
      (HWY_COMPILER_GCC_ACTUAL >= 1300 && HWY_COMPILER_GCC_ACTUAL <= 1301))
 // GCC 12.0 through 12.3 and GCC 13.0 through 13.1 have a compiler bug where the
 // vsldoi instruction is sometimes incorrectly optimized out (and this causes

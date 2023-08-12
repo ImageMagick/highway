@@ -13,6 +13,7 @@ license(
     license_kinds = ["@rules_license//licenses/generic:notice"],
 )
 
+# Dual-licensed Apache 2 and 3-clause BSD.
 licenses(["notice"])
 
 exports_files(["LICENSE"])
@@ -145,6 +146,8 @@ COMPAT = [
 # newly enabled instruction set, or the failure is only caught by sanitizers
 # which do not run in CI.
 
+# NOTE: when adding a new dependency on the Highway library, please add your
+# test to the highway.users list in highway.blueprint.
 cc_library(
     name = "hwy",
     srcs = [
@@ -368,6 +371,7 @@ HWY_TESTS = [
     ("hwy/tests/", "arithmetic_test"),
     ("hwy/tests/", "blockwise_shift_test"),
     ("hwy/tests/", "blockwise_test"),
+    ("hwy/tests/", "cast_test"),
     ("hwy/tests/", "combine_test"),
     ("hwy/tests/", "compare_test"),
     ("hwy/tests/", "compress_test"),
@@ -388,6 +392,7 @@ HWY_TESTS = [
     ("hwy/tests/", "resize_test"),
     ("hwy/tests/", "reverse_test"),
     ("hwy/tests/", "shift_test"),
+    ("hwy/tests/", "shuffle4_test"),
     ("hwy/tests/", "slide_up_down_test"),
     ("hwy/tests/", "swizzle_block_test"),
     ("hwy/tests/", "swizzle_test"),

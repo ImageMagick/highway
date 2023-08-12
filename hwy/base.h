@@ -127,12 +127,16 @@ namespace hwy {
 // Clang and GCC require attributes on each function into which SIMD intrinsics
 // are inlined. Support both per-function annotation (HWY_ATTR) for lambdas and
 // automatic annotation via pragmas.
-#if HWY_COMPILER_CLANG
+#if HWY_COMPILER_ICC
+// As of ICC 2021.{1-9} the pragma is neither implemented nor required.
+#define HWY_PUSH_ATTRIBUTES(targets_str)
+#define HWY_POP_ATTRIBUTES
+#elif HWY_COMPILER_CLANG
 #define HWY_PUSH_ATTRIBUTES(targets_str)                                \
   HWY_PRAGMA(clang attribute push(__attribute__((target(targets_str))), \
                                   apply_to = function))
 #define HWY_POP_ATTRIBUTES HWY_PRAGMA(clang attribute pop)
-#elif HWY_COMPILER_GCC
+#elif HWY_COMPILER_GCC_ACTUAL
 #define HWY_PUSH_ATTRIBUTES(targets_str) \
   HWY_PRAGMA(GCC push_options) HWY_PRAGMA(GCC target targets_str)
 #define HWY_POP_ATTRIBUTES HWY_PRAGMA(GCC pop_options)
@@ -282,6 +286,15 @@ HWY_API void CopyBytes(const From* from, To* to) {
 #endif
 }
 
+HWY_API void CopyBytes(const void* HWY_RESTRICT from, void* HWY_RESTRICT to,
+                       size_t num_of_bytes_to_copy) {
+#if HWY_COMPILER_MSVC
+  memcpy(to, from, num_of_bytes_to_copy);
+#else
+  __builtin_memcpy(to, from, num_of_bytes_to_copy);
+#endif
+}
+
 // Same as CopyBytes, but for same-sized objects; avoids a size argument.
 template <typename From, typename To>
 HWY_API void CopySameSize(const From* HWY_RESTRICT from, To* HWY_RESTRICT to) {
@@ -295,6 +308,14 @@ HWY_API void ZeroBytes(To* to) {
   memset(to, 0, kBytes);
 #else
   __builtin_memset(to, 0, kBytes);
+#endif
+}
+
+HWY_API void ZeroBytes(void* to, size_t num_bytes) {
+#if HWY_COMPILER_MSVC
+  memset(to, 0, num_bytes);
+#else
+  __builtin_memset(to, 0, num_bytes);
 #endif
 }
 
@@ -330,10 +351,11 @@ static constexpr HWY_MAYBE_UNUSED size_t kMaxVectorSize = 16;
 // Lane types
 
 // float16_t load/store/conversion intrinsics are always supported on Armv8 and
-// VFPv4. On Armv7 Clang requires __ARM_FP & 2; GCC requires -mfp16-format=ieee.
+// VFPv4 (except with MSVC). On Armv7 Clang requires __ARM_FP & 2; GCC requires
+// -mfp16-format=ieee.
 #if (HWY_ARCH_ARM_A64 && !HWY_COMPILER_MSVC) ||                    \
     (HWY_COMPILER_CLANG && defined(__ARM_FP) && (__ARM_FP & 2)) || \
-    HWY_COMPILER_GCC_ACTUAL && defined(__ARM_FP16_FORMAT_IEEE)
+    (HWY_COMPILER_GCC_ACTUAL && defined(__ARM_FP16_FORMAT_IEEE))
 #define HWY_NEON_HAVE_FLOAT16C 1
 #else
 #define HWY_NEON_HAVE_FLOAT16C 0
@@ -354,8 +376,13 @@ static constexpr HWY_MAYBE_UNUSED size_t kMaxVectorSize = 16;
 #if HWY_NEON_HAVE_FLOAT16C
 using float16_t = __fp16;
 // 2) C11 extension ISO/IEC TS 18661-3:2015 but not supported on all targets.
-//    Required for Clang RVV if the float16 extension is used.
-#elif HWY_ARCH_RVV && HWY_COMPILER_CLANG && defined(__riscv_zvfh)
+//    Required if HWY_HAVE_FLOAT16, i.e. RVV with zvfh or AVX3_SPR (with
+//    sufficiently new compiler supporting avx512fp16). Do not use on clang-cl,
+//    which is missing __extendhfsf2.
+#elif (                                                                        \
+    (HWY_ARCH_RVV && defined(__riscv_zvfh) && HWY_COMPILER_CLANG) ||           \
+    (HWY_ARCH_X86 && ((HWY_COMPILER_CLANG >= 1600 && !HWY_COMPILER_CLANGCL) || \
+                      HWY_COMPILER_GCC_ACTUAL >= 1200)))
 using float16_t = _Float16;
 // 3) Otherwise emulate
 #else
@@ -633,6 +660,8 @@ using If = typename IfT<Condition, Then, Else>::type;
       nullptr
 #define HWY_IF_FLOAT(T) hwy::EnableIf<hwy::IsFloat<T>()>* = nullptr
 #define HWY_IF_NOT_FLOAT(T) hwy::EnableIf<!hwy::IsFloat<T>()>* = nullptr
+#define HWY_IF_FLOAT3264(T) hwy::EnableIf<hwy::IsFloat3264<T>()>* = nullptr
+#define HWY_IF_NOT_FLOAT3264(T) hwy::EnableIf<!hwy::IsFloat3264<T>()>* = nullptr
 #define HWY_IF_SPECIAL_FLOAT(T) \
   hwy::EnableIf<hwy::IsSpecialFloat<T>()>* = nullptr
 #define HWY_IF_NOT_SPECIAL_FLOAT(T) \
@@ -651,8 +680,10 @@ using If = typename IfT<Condition, Then, Else>::type;
 #define HWY_IF_T_SIZE_ONE_OF(T, bit_array) \
   hwy::EnableIf<((size_t{1} << sizeof(T)) & (bit_array)) != 0>* = nullptr
 
-// Use instead of HWY_IF_T_SIZE to avoid ambiguity with float/double
+// Use instead of HWY_IF_T_SIZE to avoid ambiguity with float16_t/float/double
 // overloads.
+#define HWY_IF_UI16(T) \
+  hwy::EnableIf<IsSame<T, uint16_t>() || IsSame<T, int16_t>()>* = nullptr
 #define HWY_IF_UI32(T) \
   hwy::EnableIf<IsSame<T, uint32_t>() || IsSame<T, int32_t>()>* = nullptr
 #define HWY_IF_UI64(T) \
@@ -884,10 +915,15 @@ constexpr auto IsFloatTag() -> hwy::SizeTag<(R::is_float ? 0x200 : 0x400)> {
 // Type traits
 
 template <typename T>
+HWY_API constexpr bool IsFloat3264() {
+  return IsSame<T, float>() || IsSame<T, double>();
+}
+
+template <typename T>
 HWY_API constexpr bool IsFloat() {
   // Cannot use T(1.25) != T(1) for float16_t, which can only be converted to or
   // from a float, not compared. Include float16_t in case HWY_HAVE_FLOAT16=1.
-  return IsSame<T, float16_t>() || IsSame<T, float>() || IsSame<T, double>();
+  return IsSame<T, float16_t>() || IsFloat3264<T>();
 }
 
 // These types are often special-cased and not supported in all ops.

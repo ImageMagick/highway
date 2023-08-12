@@ -6,6 +6,8 @@ Highway is a C++ library that provides portable SIMD/vector intrinsics.
 
 [Documentation](https://google.github.io/highway/en/master/)
 
+Previously licensed under Apache 2, now dual-licensed as Apache 2 / BSD-3.
+
 ## Why
 
 We are passionate about high-performance software. We see major untapped
@@ -70,7 +72,7 @@ us via the below email.
 
 *   Browsers: Chromium (+Vivaldi), Firefox (+floorp / foxhound / librewolf / Waterfox)
 *   Cryptography: google/distributed_point_functions
-*   Image codecs: eustas/2im, [Grok JPEG 2000](https://github.com/GrokImageCompression/grok), [JPEG XL](https://github.com/libjxl/libjxl), OpenHTJ2K
+*   Image codecs: eustas/2im, [Grok JPEG 2000](https://github.com/GrokImageCompression/grok), [JPEG XL](https://github.com/libjxl/libjxl), OpenHTJ2K, [JPEGenc](https://github.com/osamu620/JPEGenc)
 *   Image processing: cloudinary/ssimulacra2, m-ab-s/media-autobuild_suite
 *   Image viewers: AlienCowEatCake/ImageViewer, mirillis/jpegxl-wic,
     [Lux panorama/image viewer](https://bitbucket.org/kfj/pv/)
@@ -88,8 +90,9 @@ Other
 If you'd like to get Highway, in addition to cloning from this Github repository
 or using it as a Git submodule, you can also find it in the following package
 managers or repositories: alpinelinux, conan-io, conda-forge, DragonFlyBSD,
-freebsd, ghostbsd, microsoft/vcpkg, MidnightBSD, NetBSD, openSUSE, opnsense,
-Xilinx/Vitis_Libraries.
+freebsd, ghostbsd, microsoft/vcpkg, MidnightBSD, MSYS2, NetBSD, openSUSE,
+opnsense, Xilinx/Vitis_Libraries. See also the list at
+https://repology.org/project/highway-simd-library/versions .
 
 ## Current status
 
@@ -209,6 +212,16 @@ tests on 32-bit x86, including AVX2/3, on GCC 7/8 and Clang 8/11/12. On Ubuntu
 `-m32 -isystem /usr/i686-linux-gnu/include`. Clang 10 and earlier require the
 above plus `-isystem /usr/i686-linux-gnu/include/c++/12/i686-linux-gnu`. See
 #1279.
+
+## Building highway - Using vcpkg
+
+highway is now available in [vcpkg](https://github.com/Microsoft/vcpkg)
+
+```bash
+vcpkg install highway
+```
+
+The highway port in vcpkg is kept up to date by Microsoft team members and community contributors. If the version is out of date, please [create an issue or pull request](https://github.com/Microsoft/vcpkg) on the vcpkg repository.
 
 ## Quick start
 

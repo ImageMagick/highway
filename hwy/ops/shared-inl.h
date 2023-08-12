@@ -38,8 +38,7 @@
 
 // We are covered by the highway.h include guard, but generic_ops-inl.h
 // includes this again #if HWY_IDE.
-#if defined(HIGHWAY_HWY_OPS_SHARED_TOGGLE) == \
-    defined(HWY_TARGET_TOGGLE)
+#if defined(HIGHWAY_HWY_OPS_SHARED_TOGGLE) == defined(HWY_TARGET_TOGGLE)
 #ifdef HIGHWAY_HWY_OPS_SHARED_TOGGLE
 #undef HIGHWAY_HWY_OPS_SHARED_TOGGLE
 #else
@@ -434,6 +433,8 @@ using BlockDFromD =
 #define HWY_IF_SIGNED_D(D) HWY_IF_SIGNED(TFromD<D>)
 #define HWY_IF_FLOAT_D(D) HWY_IF_FLOAT(TFromD<D>)
 #define HWY_IF_NOT_FLOAT_D(D) HWY_IF_NOT_FLOAT(TFromD<D>)
+#define HWY_IF_FLOAT3264_D(D) HWY_IF_FLOAT3264(TFromD<D>)
+#define HWY_IF_NOT_FLOAT3264_D(D) HWY_IF_NOT_FLOAT3264(TFromD<D>)
 #define HWY_IF_SPECIAL_FLOAT_D(D) HWY_IF_SPECIAL_FLOAT(TFromD<D>)
 #define HWY_IF_NOT_SPECIAL_FLOAT_D(D) HWY_IF_NOT_SPECIAL_FLOAT(TFromD<D>)
 #define HWY_IF_FLOAT_OR_SPECIAL_D(D) HWY_IF_FLOAT_OR_SPECIAL(TFromD<D>)
@@ -465,14 +466,11 @@ using BlockDFromD =
 #define HWY_IF_I32_D(D) hwy::EnableIf<IsSame<TFromD<D>, int32_t>()>* = nullptr
 #define HWY_IF_I64_D(D) hwy::EnableIf<IsSame<TFromD<D>, int64_t>()>* = nullptr
 
-// Use instead of HWY_IF_T_SIZE_D to avoid ambiguity with float/double
+// Use instead of HWY_IF_T_SIZE_D to avoid ambiguity with float16_t/float/double
 // overloads.
-#define HWY_IF_UI32_D(D)                         \
-  hwy::EnableIf<IsSame<TFromD<D>, uint32_t>() || \
-                IsSame<TFromD<D>, int32_t>()>* = nullptr
-#define HWY_IF_UI64_D(D)                         \
-  hwy::EnableIf<IsSame<TFromD<D>, uint64_t>() || \
-                IsSame<TFromD<D>, int64_t>()>* = nullptr
+#define HWY_IF_UI16_D(D) HWY_IF_UI16(TFromD<D>)
+#define HWY_IF_UI32_D(D) HWY_IF_UI32(TFromD<D>)
+#define HWY_IF_UI64_D(D) HWY_IF_UI64(TFromD<D>)
 
 #define HWY_IF_BF16_D(D) \
   hwy::EnableIf<IsSame<TFromD<D>, hwy::bfloat16_t>()>* = nullptr

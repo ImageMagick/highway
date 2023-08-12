@@ -265,10 +265,25 @@ HWY_API size_t Lanes(Simd<T, N, kPow2> d) {
   }
 HWY_SVE_FOREACH(HWY_SVE_FIRSTN, FirstN, whilelt)
 HWY_SVE_FOREACH_BF16(HWY_SVE_FIRSTN, FirstN, whilelt)
+
 #undef HWY_SVE_FIRSTN
 
 template <class D>
 using MFromD = decltype(FirstN(D(), 0));
+
+#if !HWY_HAVE_FLOAT16
+template <class D, HWY_IF_F16_D(D)>
+MFromD<RebindToUnsigned<D>> FirstN(D /* tag */, size_t count) {
+  return FirstN(RebindToUnsigned<D>(), count);
+}
+#endif  // !HWY_HAVE_FLOAT16
+
+#if !HWY_SVE_HAVE_BFLOAT16
+template <class D, HWY_IF_BF16_D(D)>
+MFromD<RebindToUnsigned<D>> FirstN(D /* tag */, size_t count) {
+  return FirstN(RebindToUnsigned<D>(), count);
+}
+#endif  // !HWY_SVE_HAVE_BFLOAT16
 
 namespace detail {
 
@@ -451,20 +466,20 @@ HWY_SVE_FOREACH(HWY_SVE_GET, Get, get)
 HWY_SVE_FOREACH_BF16(HWY_SVE_GET, Get, get)
 #undef HWY_SVE_GET
 
-#define HWY_SVE_SET(BASE, CHAR, BITS, HALF, NAME, OP)                         \
-  template <size_t kIndex>                                                    \
-  HWY_API HWY_SVE_TUPLE(BASE, BITS, 2) NAME##2(                               \
-      HWY_SVE_TUPLE(BASE, BITS, 2) tuple, HWY_SVE_V(BASE, BITS) vec) {        \
-    return sv##OP##2_##CHAR##BITS(tuple, kIndex, vec);                        \
-  }                                                                           \
-  template <size_t kIndex>                                                    \
-  HWY_API HWY_SVE_TUPLE(BASE, BITS, 3) NAME##3(                               \
-      HWY_SVE_TUPLE(BASE, BITS, 3) tuple, HWY_SVE_V(BASE, BITS) vec) {        \
-    return sv##OP##3_##CHAR##BITS(tuple, kIndex, vec);                        \
-  }                                                                           \
-  template <size_t kIndex>                                                    \
-  HWY_API HWY_SVE_TUPLE(BASE, BITS, 4) NAME##4(                               \
-      HWY_SVE_TUPLE(BASE, BITS, 4) tuple, HWY_SVE_V(BASE, BITS) vec) {        \
+#define HWY_SVE_SET(BASE, CHAR, BITS, HALF, NAME, OP)                          \
+  template <size_t kIndex>                                                     \
+  HWY_API HWY_SVE_TUPLE(BASE, BITS, 2)                                         \
+      NAME##2(HWY_SVE_TUPLE(BASE, BITS, 2) tuple, HWY_SVE_V(BASE, BITS) vec) { \
+    return sv##OP##2_##CHAR##BITS(tuple, kIndex, vec);                         \
+  }                                                                            \
+  template <size_t kIndex>                                                     \
+  HWY_API HWY_SVE_TUPLE(BASE, BITS, 3)                                         \
+      NAME##3(HWY_SVE_TUPLE(BASE, BITS, 3) tuple, HWY_SVE_V(BASE, BITS) vec) { \
+    return sv##OP##3_##CHAR##BITS(tuple, kIndex, vec);                         \
+  }                                                                            \
+  template <size_t kIndex>                                                     \
+  HWY_API HWY_SVE_TUPLE(BASE, BITS, 4)                                         \
+      NAME##4(HWY_SVE_TUPLE(BASE, BITS, 4) tuple, HWY_SVE_V(BASE, BITS) vec) { \
     return sv##OP##4_##CHAR##BITS(tuple, kIndex, vec);                         \
   }
 
@@ -790,6 +805,7 @@ HWY_SVE_FOREACH(HWY_SVE_RETV_ARGPVV, Mul, mul)
 // ------------------------------ MulHigh
 HWY_SVE_FOREACH_UI16(HWY_SVE_RETV_ARGPVV, MulHigh, mulh)
 // Not part of API, used internally:
+HWY_SVE_FOREACH_UI08(HWY_SVE_RETV_ARGPVV, MulHigh, mulh)
 HWY_SVE_FOREACH_UI32(HWY_SVE_RETV_ARGPVV, MulHigh, mulh)
 HWY_SVE_FOREACH_U64(HWY_SVE_RETV_ARGPVV, MulHigh, mulh)
 
@@ -1318,6 +1334,12 @@ HWY_API VFromD<D> MaskedLoadOr(VFromD<D> v, MFromD<D> m, D d,
 
 // ------------------------------ ScatterOffset/Index
 
+#ifdef HWY_NATIVE_SCATTER
+#undef HWY_NATIVE_SCATTER
+#else
+#define HWY_NATIVE_SCATTER
+#endif
+
 #define HWY_SVE_SCATTER_OFFSET(BASE, CHAR, BITS, HALF, NAME, OP)             \
   template <size_t N, int kPow2>                                             \
   HWY_API void NAME(HWY_SVE_V(BASE, BITS) v,                                 \
@@ -1328,20 +1350,34 @@ HWY_API VFromD<D> MaskedLoadOr(VFromD<D> v, MFromD<D> m, D d,
                                           v);                                \
   }
 
-#define HWY_SVE_SCATTER_INDEX(BASE, CHAR, BITS, HALF, NAME, OP)                \
-  template <size_t N, int kPow2>                                               \
-  HWY_API void NAME(                                                           \
-      HWY_SVE_V(BASE, BITS) v, HWY_SVE_D(BASE, BITS, N, kPow2) d,              \
-      HWY_SVE_T(BASE, BITS) * HWY_RESTRICT base, HWY_SVE_V(int, BITS) index) { \
-    sv##OP##_s##BITS##index_##CHAR##BITS(detail::MakeMask(d), base, index, v); \
+#define HWY_SVE_MASKED_SCATTER_INDEX(BASE, CHAR, BITS, HALF, NAME, OP) \
+  template <size_t N, int kPow2>                                       \
+  HWY_API void NAME(HWY_SVE_V(BASE, BITS) v, svbool_t m,               \
+                    HWY_SVE_D(BASE, BITS, N, kPow2) /*d*/,             \
+                    HWY_SVE_T(BASE, BITS) * HWY_RESTRICT base,         \
+                    HWY_SVE_V(int, BITS) index) {                      \
+    sv##OP##_s##BITS##index_##CHAR##BITS(m, base, index, v);           \
   }
 
 HWY_SVE_FOREACH_UIF3264(HWY_SVE_SCATTER_OFFSET, ScatterOffset, st1_scatter)
-HWY_SVE_FOREACH_UIF3264(HWY_SVE_SCATTER_INDEX, ScatterIndex, st1_scatter)
+HWY_SVE_FOREACH_UIF3264(HWY_SVE_MASKED_SCATTER_INDEX, MaskedScatterIndex,
+                        st1_scatter)
 #undef HWY_SVE_SCATTER_OFFSET
-#undef HWY_SVE_SCATTER_INDEX
+#undef HWY_SVE_MASKED_SCATTER_INDEX
+
+template <class D>
+HWY_API void ScatterIndex(VFromD<D> v, D d, TFromD<D>* HWY_RESTRICT p,
+                          VFromD<RebindToSigned<D>> indices) {
+  MaskedScatterIndex(v, detail::MakeMask(d), d, p, indices);
+}
 
 // ------------------------------ GatherOffset/Index
+
+#ifdef HWY_NATIVE_GATHER
+#undef HWY_NATIVE_GATHER
+#else
+#define HWY_NATIVE_GATHER
+#endif
 
 #define HWY_SVE_GATHER_OFFSET(BASE, CHAR, BITS, HALF, NAME, OP)             \
   template <size_t N, int kPow2>                                            \
@@ -1352,20 +1388,26 @@ HWY_SVE_FOREACH_UIF3264(HWY_SVE_SCATTER_INDEX, ScatterIndex, st1_scatter)
     return sv##OP##_s##BITS##offset_##CHAR##BITS(detail::MakeMask(d), base, \
                                                  offset);                   \
   }
-#define HWY_SVE_GATHER_INDEX(BASE, CHAR, BITS, HALF, NAME, OP)             \
-  template <size_t N, int kPow2>                                           \
-  HWY_API HWY_SVE_V(BASE, BITS)                                            \
-      NAME(HWY_SVE_D(BASE, BITS, N, kPow2) d,                              \
-           const HWY_SVE_T(BASE, BITS) * HWY_RESTRICT base,                \
-           HWY_SVE_V(int, BITS) index) {                                   \
-    return sv##OP##_s##BITS##index_##CHAR##BITS(detail::MakeMask(d), base, \
-                                                index);                    \
+#define HWY_SVE_MASKED_GATHER_INDEX(BASE, CHAR, BITS, HALF, NAME, OP) \
+  template <size_t N, int kPow2>                                      \
+  HWY_API HWY_SVE_V(BASE, BITS)                                       \
+      NAME(svbool_t m, HWY_SVE_D(BASE, BITS, N, kPow2) /*d*/,         \
+           const HWY_SVE_T(BASE, BITS) * HWY_RESTRICT base,           \
+           HWY_SVE_V(int, BITS) index) {                              \
+    return sv##OP##_s##BITS##index_##CHAR##BITS(m, base, index);      \
   }
 
 HWY_SVE_FOREACH_UIF3264(HWY_SVE_GATHER_OFFSET, GatherOffset, ld1_gather)
-HWY_SVE_FOREACH_UIF3264(HWY_SVE_GATHER_INDEX, GatherIndex, ld1_gather)
+HWY_SVE_FOREACH_UIF3264(HWY_SVE_MASKED_GATHER_INDEX, MaskedGatherIndex,
+                        ld1_gather)
 #undef HWY_SVE_GATHER_OFFSET
-#undef HWY_SVE_GATHER_INDEX
+#undef HWY_SVE_MASKED_GATHER_INDEX
+
+template <class D>
+HWY_API VFromD<D> GatherIndex(D d, const TFromD<D>* HWY_RESTRICT p,
+                              VFromD<RebindToSigned<D>> indices) {
+  return MaskedGatherIndex(detail::MakeMask(d), d, p, indices);
+}
 
 // ------------------------------ LoadInterleaved2
 
@@ -3551,7 +3593,7 @@ HWY_API V IfNegativeThenElse(V v, V yes, V no) {
   const DFromV<V> d;
   const RebindToSigned<decltype(d)> di;
 
-  const svbool_t m = MaskFromVec(BitCast(d, BroadcastSignBit(BitCast(di, v))));
+  const svbool_t m = detail::LtN(BitCast(di, v), 0);
   return IfThenElse(m, yes, no);
 }
 
@@ -4463,13 +4505,18 @@ namespace detail {
     return sv##OP##_##CHAR##BITS(a, b);                        \
   }
 
+HWY_SVE_FOREACH_UI16(HWY_SVE_MUL_EVEN, MulEvenNative, mullb)
+HWY_SVE_FOREACH_UI32(HWY_SVE_MUL_EVEN, MulEvenNative, mullb)
 HWY_SVE_FOREACH_UI64(HWY_SVE_MUL_EVEN, MulEvenNative, mullb)
+HWY_SVE_FOREACH_UI16(HWY_SVE_MUL_EVEN, MulOddNative, mullt)
+HWY_SVE_FOREACH_UI32(HWY_SVE_MUL_EVEN, MulOddNative, mullt)
+HWY_SVE_FOREACH_UI64(HWY_SVE_MUL_EVEN, MulOddNative, mullt)
 #undef HWY_SVE_MUL_EVEN
 }  // namespace detail
 #endif
 
 template <class V, class DW = RepartitionToWide<DFromV<V>>,
-          HWY_IF_T_SIZE_V(V, 4)>
+          HWY_IF_T_SIZE_ONE_OF_V(V, (1 << 1) | (1 << 2) | (1 << 4))>
 HWY_API VFromD<DW> MulEven(const V a, const V b) {
 #if HWY_SVE_HAVE_2
   return BitCast(DW(), detail::MulEvenNative(a, b));
@@ -4477,6 +4524,18 @@ HWY_API VFromD<DW> MulEven(const V a, const V b) {
   const auto lo = Mul(a, b);
   const auto hi = MulHigh(a, b);
   return BitCast(DW(), detail::InterleaveEven(lo, hi));
+#endif
+}
+
+template <class V, class DW = RepartitionToWide<DFromV<V>>,
+          HWY_IF_T_SIZE_ONE_OF_V(V, (1 << 1) | (1 << 2) | (1 << 4))>
+HWY_API VFromD<DW> MulOdd(const V a, const V b) {
+#if HWY_SVE_HAVE_2
+  return BitCast(DW(), detail::MulOddNative(a, b));
+#else
+  const auto lo = Mul(a, b);
+  const auto hi = MulHigh(a, b);
+  return BitCast(DW(), detail::InterleaveOdd(lo, hi));
 #endif
 }
 
@@ -4511,13 +4570,13 @@ HWY_API svfloat32_t WidenMulPairwiseAdd(Simd<float, N, kPow2> df32, VBF16 a,
   const VU32 be = ShiftLeft<16>(BitCast(du32, b));
   const VU32 bo = And(BitCast(du32, b), odd);
   return MulAdd(BitCast(df32, ae), BitCast(df32, be),
-            Mul(BitCast(df32, ao), BitCast(df32, bo)));
+                Mul(BitCast(df32, ao), BitCast(df32, bo)));
 #endif  // HWY_SVE_HAVE_BFLOAT16
 }
 
 template <size_t N, int kPow2>
-HWY_API svint32_t WidenMulPairwiseAdd(Simd<int32_t, N, kPow2> d32,
-                                            svint16_t a, svint16_t b) {
+HWY_API svint32_t WidenMulPairwiseAdd(Simd<int32_t, N, kPow2> d32, svint16_t a,
+                                      svint16_t b) {
 #if HWY_SVE_HAVE_2
   (void)d32;
   return svmlalt_s32(svmullb_s32(a, b), a, b);
@@ -4530,6 +4589,24 @@ HWY_API svint32_t WidenMulPairwiseAdd(Simd<int32_t, N, kPow2> d32,
   const svint32_t ao = ShiftRight<16>(BitCast(d32, a));
   const svint32_t bo = ShiftRight<16>(BitCast(d32, b));
   return svmla_s32_x(pg, svmul_s32_x(pg, ao, bo), ae, be);
+#endif
+}
+
+template <size_t N, int kPow2>
+HWY_API svuint32_t WidenMulPairwiseAdd(Simd<uint32_t, N, kPow2> d32,
+                                       svuint16_t a, svuint16_t b) {
+#if HWY_SVE_HAVE_2
+  (void)d32;
+  return svmlalt_u32(svmullb_u32(a, b), a, b);
+#else
+  const svbool_t pg = detail::PTrue(d32);
+  // Shifting extracts the odd lanes as RearrangeToOddPlusEven prefers.
+  // Fortunately SVE has sign-extension for the even lanes.
+  const svuint32_t ae = svexth_u32_x(pg, BitCast(d32, a));
+  const svuint32_t be = svexth_u32_x(pg, BitCast(d32, b));
+  const svuint32_t ao = ShiftRight<16>(BitCast(d32, a));
+  const svuint32_t bo = ShiftRight<16>(BitCast(d32, b));
+  return svmla_u32_x(pg, svmul_u32_x(pg, ao, bo), ae, be);
 #endif
 }
 
@@ -4581,11 +4658,106 @@ HWY_API svint32_t ReorderWidenMulAccumulate(Simd<int32_t, N, kPow2> d32,
 #endif
 }
 
+template <size_t N, int kPow2>
+HWY_API svuint32_t ReorderWidenMulAccumulate(Simd<uint32_t, N, kPow2> d32,
+                                             svuint16_t a, svuint16_t b,
+                                             const svuint32_t sum0,
+                                             svuint32_t& sum1) {
+#if HWY_SVE_HAVE_2
+  (void)d32;
+  sum1 = svmlalt_u32(sum1, a, b);
+  return svmlalb_u32(sum0, a, b);
+#else
+  const svbool_t pg = detail::PTrue(d32);
+  // Shifting extracts the odd lanes as RearrangeToOddPlusEven prefers.
+  // Fortunately SVE has sign-extension for the even lanes.
+  const svuint32_t ae = svexth_u32_x(pg, BitCast(d32, a));
+  const svuint32_t be = svexth_u32_x(pg, BitCast(d32, b));
+  const svuint32_t ao = ShiftRight<16>(BitCast(d32, a));
+  const svuint32_t bo = ShiftRight<16>(BitCast(d32, b));
+  sum1 = svmla_u32_x(pg, sum1, ao, bo);
+  return svmla_u32_x(pg, sum0, ae, be);
+#endif
+}
+
 // ------------------------------ RearrangeToOddPlusEven
 template <class VW>
 HWY_API VW RearrangeToOddPlusEven(const VW sum0, const VW sum1) {
   // sum0 is the sum of bottom/even lanes and sum1 of top/odd lanes.
   return Add(sum0, sum1);
+}
+
+// ------------------------------ SumOfMulQuadAccumulate
+
+#ifdef HWY_NATIVE_I8_I8_SUMOFMULQUADACCUMULATE
+#undef HWY_NATIVE_I8_I8_SUMOFMULQUADACCUMULATE
+#else
+#define HWY_NATIVE_I8_I8_SUMOFMULQUADACCUMULATE
+#endif
+
+template <class DI32, HWY_IF_I32_D(DI32)>
+HWY_API VFromD<DI32> SumOfMulQuadAccumulate(DI32 /*di32*/, svint8_t a,
+                                            svint8_t b, svint32_t sum) {
+  return svdot_s32(sum, a, b);
+}
+
+#ifdef HWY_NATIVE_U8_U8_SUMOFMULQUADACCUMULATE
+#undef HWY_NATIVE_U8_U8_SUMOFMULQUADACCUMULATE
+#else
+#define HWY_NATIVE_U8_U8_SUMOFMULQUADACCUMULATE
+#endif
+
+template <class DU32, HWY_IF_U32_D(DU32)>
+HWY_API VFromD<DU32> SumOfMulQuadAccumulate(DU32 /*du32*/, svuint8_t a,
+                                            svuint8_t b, svuint32_t sum) {
+  return svdot_u32(sum, a, b);
+}
+
+#ifdef HWY_NATIVE_U8_I8_SUMOFMULQUADACCUMULATE
+#undef HWY_NATIVE_U8_I8_SUMOFMULQUADACCUMULATE
+#else
+#define HWY_NATIVE_U8_I8_SUMOFMULQUADACCUMULATE
+#endif
+
+template <class DI32, HWY_IF_I32_D(DI32)>
+HWY_API VFromD<DI32> SumOfMulQuadAccumulate(DI32 di32, svuint8_t a_u,
+                                            svint8_t b_i, svint32_t sum) {
+  // TODO: use svusdot_u32 on SVE targets that require support for both SVE2
+  // and SVE I8MM.
+
+  const RebindToUnsigned<decltype(di32)> du32;
+  const Repartition<uint8_t, decltype(di32)> du8;
+
+  const auto b_u = BitCast(du8, b_i);
+  const auto result_sum0 = svdot_u32(BitCast(du32, sum), a_u, b_u);
+  const auto result_sum1 =
+      ShiftLeft<8>(svdot_u32(Zero(du32), a_u, ShiftRight<7>(b_u)));
+
+  return BitCast(di32, Sub(result_sum0, result_sum1));
+}
+
+#ifdef HWY_NATIVE_I16_I16_SUMOFMULQUADACCUMULATE
+#undef HWY_NATIVE_I16_I16_SUMOFMULQUADACCUMULATE
+#else
+#define HWY_NATIVE_I16_I16_SUMOFMULQUADACCUMULATE
+#endif
+
+template <class DI64, HWY_IF_I64_D(DI64)>
+HWY_API VFromD<DI64> SumOfMulQuadAccumulate(DI64 /*di64*/, svint16_t a,
+                                            svint16_t b, svint64_t sum) {
+  return svdot_s64(sum, a, b);
+}
+
+#ifdef HWY_NATIVE_U16_U16_SUMOFMULQUADACCUMULATE
+#undef HWY_NATIVE_U16_U16_SUMOFMULQUADACCUMULATE
+#else
+#define HWY_NATIVE_U16_U16_SUMOFMULQUADACCUMULATE
+#endif
+
+template <class DU64, HWY_IF_U64_D(DU64)>
+HWY_API VFromD<DU64> SumOfMulQuadAccumulate(DU64 /*du64*/, svuint16_t a,
+                                            svuint16_t b, svuint64_t sum) {
+  return svdot_u64(sum, a, b);
 }
 
 // ------------------------------ AESRound / CLMul

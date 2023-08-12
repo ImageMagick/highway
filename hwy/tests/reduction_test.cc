@@ -79,8 +79,7 @@ struct TestSumOfLanes {
 };
 
 HWY_NOINLINE void TestAllSumOfLanes() {
-  ForUIF3264(ForPartialVectors<TestSumOfLanes>());
-  ForUI16(ForPartialVectors<TestSumOfLanes>());
+  ForUIF163264(ForPartialVectors<TestSumOfLanes>());
 
 // UI8 is only implemented for some targets.
 #if HWY_MAX_BYTES == 16 && (HWY_ARCH_ARM || HWY_ARCH_X86)
@@ -200,10 +199,8 @@ struct TestMaxOfLanes {
 HWY_NOINLINE void TestAllMinMaxOfLanes() {
   const ForPartialVectors<TestMinOfLanes> test_min;
   const ForPartialVectors<TestMaxOfLanes> test_max;
-  ForUIF3264(test_min);
-  ForUIF3264(test_max);
-  ForUI16(test_min);
-  ForUI16(test_max);
+  ForUIF163264(test_min);
+  ForUIF163264(test_max);
 
 // UI8 is only implemented for some targets.
 #if HWY_MAX_BYTES == 16 && (HWY_ARCH_ARM || HWY_ARCH_X86)
@@ -271,10 +268,10 @@ struct TestSumsOf8AbsDiff {
         uint64_t sum = 0;
         for (size_t i = 0; i < 8; ++i) {
           const auto lane_diff =
-            static_cast<int16_t>(in_lanes_a[idx_sum * 8 + i]) -
-            static_cast<int16_t>(in_lanes_b[idx_sum * 8 + i]);
+              static_cast<int16_t>(in_lanes_a[idx_sum * 8 + i]) -
+              static_cast<int16_t>(in_lanes_b[idx_sum * 8 + i]);
           sum +=
-            static_cast<uint64_t>((lane_diff >= 0) ? lane_diff : -lane_diff);
+              static_cast<uint64_t>((lane_diff >= 0) ? lane_diff : -lane_diff);
         }
         sum_lanes[idx_sum] = sum;
       }

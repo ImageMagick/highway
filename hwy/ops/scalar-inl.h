@@ -338,7 +338,11 @@ HWY_API Vec1<T> IfThenZeroElse(const Mask1<T> mask, const Vec1<T> no) {
 
 template <typename T>
 HWY_API Vec1<T> IfNegativeThenElse(Vec1<T> v, Vec1<T> yes, Vec1<T> no) {
-  return v.raw < 0 ? yes : no;
+  const DFromV<decltype(v)> d;
+  const RebindToSigned<decltype(d)> di;
+  const auto vi = BitCast(di, v);
+
+  return vi.raw < 0 ? yes : no;
 }
 
 template <typename T>
@@ -730,17 +734,16 @@ HWY_API Vec1<uint16_t> MulHigh(const Vec1<uint16_t> a, const Vec1<uint16_t> b) {
 }
 
 HWY_API Vec1<int16_t> MulFixedPoint15(Vec1<int16_t> a, Vec1<int16_t> b) {
-  return Vec1<int16_t>(static_cast<int16_t>((2 * a.raw * b.raw + 32768) >> 16));
+  return Vec1<int16_t>(static_cast<int16_t>((a.raw * b.raw + 16384) >> 15));
 }
 
 // Multiplies even lanes (0, 2 ..) and returns the double-wide result.
-HWY_API Vec1<int64_t> MulEven(const Vec1<int32_t> a, const Vec1<int32_t> b) {
-  const int64_t a64 = a.raw;
-  return Vec1<int64_t>(a64 * b.raw);
-}
-HWY_API Vec1<uint64_t> MulEven(const Vec1<uint32_t> a, const Vec1<uint32_t> b) {
-  const uint64_t a64 = a.raw;
-  return Vec1<uint64_t>(a64 * b.raw);
+template <class T, HWY_IF_T_SIZE_ONE_OF(T, (1 << 1) | (1 << 2) | (1 << 4)),
+          HWY_IF_NOT_FLOAT_NOR_SPECIAL(T)>
+HWY_API Vec1<MakeWide<T>> MulEven(const Vec1<T> a, const Vec1<T> b) {
+  using TW = MakeWide<T>;
+  const TW a_wide = a.raw;
+  return Vec1<TW>(static_cast<TW>(a_wide * b.raw));
 }
 
 // Approximate reciprocal
@@ -752,8 +755,9 @@ HWY_API Vec1<float> ApproximateReciprocal(const Vec1<float> v) {
   return Vec1<float>(1.0f / v.raw);
 }
 
-// Absolute value of difference.
-HWY_API Vec1<float> AbsDiff(const Vec1<float> a, const Vec1<float> b) {
+// generic_ops takes care of integer T.
+template <typename T, HWY_IF_FLOAT(T)>
+HWY_API Vec1<T> AbsDiff(const Vec1<T> a, const Vec1<T> b) {
   return Abs(a - b);
 }
 
@@ -1072,6 +1076,18 @@ HWY_API Vec1<T> LoadDup128(D d, const T* HWY_RESTRICT aligned) {
   return Load(d, aligned);
 }
 
+#ifdef HWY_NATIVE_LOAD_N
+#undef HWY_NATIVE_LOAD_N
+#else
+#define HWY_NATIVE_LOAD_N
+#endif
+
+template <class D, typename T = TFromD<D>>
+HWY_API VFromD<D> LoadN(D d, const T* HWY_RESTRICT p,
+                        size_t max_lanes_to_load) {
+  return (max_lanes_to_load > 0) ? Load(d, p) : Zero(d);
+}
+
 // ------------------------------ Store
 
 template <class D, typename T = TFromD<D>>
@@ -1088,6 +1104,20 @@ template <class D, typename T = TFromD<D>>
 HWY_API void BlendedStore(const Vec1<T> v, Mask1<T> m, D d, T* HWY_RESTRICT p) {
   if (!m.bits) return;
   StoreU(v, d, p);
+}
+
+#ifdef HWY_NATIVE_STORE_N
+#undef HWY_NATIVE_STORE_N
+#else
+#define HWY_NATIVE_STORE_N
+#endif
+
+template <class D, typename T = TFromD<D>>
+HWY_API void StoreN(VFromD<D> v, D d, T* HWY_RESTRICT p,
+                    size_t max_lanes_to_store) {
+  if (max_lanes_to_store > 0) {
+    Store(v, d, p);
+  }
 }
 
 // ------------------------------ LoadInterleaved2/3/4
@@ -1160,21 +1190,40 @@ HWY_API void Stream(const Vec1<T> v, D d, T* HWY_RESTRICT aligned) {
 
 // ------------------------------ Scatter
 
+#ifdef HWY_NATIVE_SCATTER
+#undef HWY_NATIVE_SCATTER
+#else
+#define HWY_NATIVE_SCATTER
+#endif
+
 template <class D, typename T = TFromD<D>, typename TI>
 HWY_API void ScatterOffset(Vec1<T> v, D d, T* base, Vec1<TI> offset) {
   static_assert(sizeof(T) == sizeof(TI), "Index/lane size must match");
   uint8_t* const base8 = reinterpret_cast<uint8_t*>(base) + offset.raw;
-  return Store(v, d, reinterpret_cast<T*>(base8));
+  Store(v, d, reinterpret_cast<T*>(base8));
 }
 
 template <class D, typename T = TFromD<D>, typename TI>
 HWY_API void ScatterIndex(Vec1<T> v, D d, T* HWY_RESTRICT base,
                           Vec1<TI> index) {
   static_assert(sizeof(T) == sizeof(TI), "Index/lane size must match");
-  return Store(v, d, base + index.raw);
+  Store(v, d, base + index.raw);
+}
+
+template <class D, typename T = TFromD<D>, typename TI>
+HWY_API void MaskedScatterIndex(Vec1<T> v, Mask1<T> m, D d,
+                                T* HWY_RESTRICT base, Vec1<TI> index) {
+  static_assert(sizeof(T) == sizeof(TI), "Index/lane size must match");
+  if (m.bits) Store(v, d, base + index.raw);
 }
 
 // ------------------------------ Gather
+
+#ifdef HWY_NATIVE_GATHER
+#undef HWY_NATIVE_GATHER
+#else
+#define HWY_NATIVE_GATHER
+#endif
 
 template <class D, typename T = TFromD<D>, typename TI>
 HWY_API Vec1<T> GatherOffset(D d, const T* base, Vec1<TI> offset) {
@@ -1188,6 +1237,13 @@ template <class D, typename T = TFromD<D>, typename TI>
 HWY_API Vec1<T> GatherIndex(D d, const T* HWY_RESTRICT base, Vec1<TI> index) {
   static_assert(sizeof(T) == sizeof(TI), "Index/lane size must match");
   return Load(d, base + index.raw);
+}
+
+template <class D, typename T = TFromD<D>, typename TI>
+HWY_API Vec1<T> MaskedGatherIndex(Mask1<T> m, D d, const T* HWY_RESTRICT base,
+                                  Vec1<TI> index) {
+  static_assert(sizeof(T) == sizeof(TI), "Index/lane size must match");
+  return MaskedLoad(m, d, base + index.raw);
 }
 
 // ================================================== CONVERT
@@ -1770,14 +1826,39 @@ HWY_API VFromD<D> LoadExpand(MFromD<D> mask, D d,
 
 template <class D32, HWY_IF_F32_D(D32)>
 HWY_API Vec1<float> WidenMulPairwiseAdd(D32 /* tag */, Vec1<bfloat16_t> a,
-                                              Vec1<bfloat16_t> b) {
+                                        Vec1<bfloat16_t> b) {
   return Vec1<float>(F32FromBF16(a.raw)) * Vec1<float>(F32FromBF16(b.raw));
 }
 
 template <class D32, HWY_IF_I32_D(D32)>
 HWY_API Vec1<int32_t> WidenMulPairwiseAdd(D32 /* tag */, Vec1<int16_t> a,
-                                                Vec1<int16_t> b) {
+                                          Vec1<int16_t> b) {
   return Vec1<int32_t>(a.raw * b.raw);
+}
+
+// ------------------------------ SatWidenMulPairwiseAdd
+
+#ifdef HWY_NATIVE_U8_I8_SATWIDENMULPAIRWISEADD
+#undef HWY_NATIVE_U8_I8_SATWIDENMULPAIRWISEADD
+#else
+#define HWY_NATIVE_U8_I8_SATWIDENMULPAIRWISEADD
+#endif
+
+template <class DI16, HWY_IF_I16_D(DI16)>
+HWY_API Vec1<int16_t> SatWidenMulPairwiseAdd(DI16 /* tag */, Vec1<uint8_t> a,
+                                             Vec1<int8_t> b) {
+  // Saturation of a.raw * b.raw is not needed on the HWY_SCALAR target as the
+  // input vectors only have 1 lane on the HWY_SCALAR target and as
+  // a.raw * b.raw is between -32640 and 32385, which is already within the
+  // range of an int16_t.
+
+  // On other targets, a saturated addition of a[0]*b[0] + a[1]*b[1] is needed
+  // as it is possible for the addition of a[0]*b[0] + a[1]*b[1] to overflow if
+  // a[0], a[1], b[0], and b[1] are all non-zero and b[0] and b[1] both have the
+  // same sign.
+
+  return Vec1<int16_t>(static_cast<int16_t>(a.raw) *
+                       static_cast<int16_t>(b.raw));
 }
 
 // ------------------------------ ReorderWidenMulAccumulate (MulAdd, ZipLower)
@@ -1797,6 +1878,15 @@ HWY_API Vec1<int32_t> ReorderWidenMulAccumulate(D32 /* tag */, Vec1<int16_t> a,
                                                 const Vec1<int32_t> sum0,
                                                 Vec1<int32_t>& /* sum1 */) {
   return Vec1<int32_t>(a.raw * b.raw + sum0.raw);
+}
+
+template <class DU32, HWY_IF_U32_D(DU32)>
+HWY_API Vec1<uint32_t> ReorderWidenMulAccumulate(DU32 /* tag */,
+                                                 Vec1<uint16_t> a,
+                                                 Vec1<uint16_t> b,
+                                                 const Vec1<uint32_t> sum0,
+                                                 Vec1<uint32_t>& /* sum1 */) {
+  return Vec1<uint32_t>(static_cast<uint32_t>(a.raw) * b.raw + sum0.raw);
 }
 
 // ------------------------------ RearrangeToOddPlusEven

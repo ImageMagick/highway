@@ -1272,13 +1272,32 @@ HWY_API Vec128<int64_t> Combine(D /* tag */, Vec64<int64_t> hi,
   return Vec128<int64_t>(vcombine_s64(lo.raw, hi.raw));
 }
 
-#if HWY_HAVE_FLOAT16
 template <class D, HWY_IF_F16_D(D)>
-HWY_API Vec128<float16_t> Combine(D /* tag */, Vec64<float16_t> hi,
+HWY_API Vec128<float16_t> Combine(D d, Vec64<float16_t> hi,
                                   Vec64<float16_t> lo) {
+#if HWY_HAVE_FLOAT16
+  (void)d;
   return Vec128<float16_t>(vcombine_f16(lo.raw, hi.raw));
-}
+#else
+  const RebindToUnsigned<D> du;
+  const Half<decltype(du)> duh;
+  return BitCast(d, Combine(du, BitCast(duh, hi), BitCast(duh, lo)));
 #endif
+}
+
+template <class D, HWY_IF_BF16_D(D)>
+HWY_API Vec128<bfloat16_t> Combine(D d, Vec64<bfloat16_t> hi,
+                                   Vec64<bfloat16_t> lo) {
+#if HWY_NEON_HAVE_BFLOAT16
+  (void)d;
+  return Vec128<bfloat16_t>(vcombine_bf16(lo.raw, hi.raw));
+#else
+  const RebindToUnsigned<D> du;
+  const Half<decltype(du)> duh;
+  return BitCast(d, Combine(du, BitCast(duh, hi), BitCast(duh, lo)));
+#endif
+}
+
 template <class D, HWY_IF_F32_D(D)>
 HWY_API Vec128<float> Combine(D /* tag */, Vec64<float> hi, Vec64<float> lo) {
   return Vec128<float>(vcombine_f32(lo.raw, hi.raw));
@@ -3775,6 +3794,97 @@ HWY_API Vec64<double> PromoteTo(D d, Vec32<int32_t> v) {
 
 #endif  // HWY_HAVE_FLOAT64
 
+// ------------------------------ PromoteUpperTo
+
+#if HWY_ARCH_ARM_A64
+
+// Per-target flag to prevent generic_ops-inl.h from defining PromoteUpperTo.
+#ifdef HWY_NATIVE_PROMOTE_UPPER_TO
+#undef HWY_NATIVE_PROMOTE_UPPER_TO
+#else
+#define HWY_NATIVE_PROMOTE_UPPER_TO
+#endif
+
+// Unsigned: zero-extend to full vector.
+template <class D, HWY_IF_U16_D(D)>
+HWY_API Vec128<uint16_t> PromoteUpperTo(D /* tag */, Vec128<uint8_t> v) {
+  return Vec128<uint16_t>(vmovl_high_u8(v.raw));
+}
+template <class D, HWY_IF_U32_D(D)>
+HWY_API Vec128<uint32_t> PromoteUpperTo(D /* tag */, Vec128<uint16_t> v) {
+  return Vec128<uint32_t>(vmovl_high_u16(v.raw));
+}
+template <class D, HWY_IF_U64_D(D)>
+HWY_API Vec128<uint64_t> PromoteUpperTo(D /* tag */, Vec128<uint32_t> v) {
+  return Vec128<uint64_t>(vmovl_high_u32(v.raw));
+}
+template <class D, HWY_IF_I16_D(D)>
+HWY_API Vec128<int16_t> PromoteUpperTo(D d, Vec128<uint8_t> v) {
+  return BitCast(d, Vec128<uint16_t>(vmovl_high_u8(v.raw)));
+}
+template <class D, HWY_IF_I32_D(D)>
+HWY_API Vec128<int32_t> PromoteUpperTo(D d, Vec128<uint16_t> v) {
+  return BitCast(d, Vec128<uint32_t>(vmovl_high_u16(v.raw)));
+}
+template <class D, HWY_IF_I64_D(D)>
+HWY_API Vec128<int64_t> PromoteUpperTo(D d, Vec128<uint32_t> v) {
+  return BitCast(d, Vec128<uint64_t>(vmovl_high_u32(v.raw)));
+}
+
+// Signed: replicate sign bit to full vector.
+template <class D, HWY_IF_I16_D(D)>
+HWY_API Vec128<int16_t> PromoteUpperTo(D /* tag */, Vec128<int8_t> v) {
+  return Vec128<int16_t>(vmovl_high_s8(v.raw));
+}
+template <class D, HWY_IF_I32_D(D)>
+HWY_API Vec128<int32_t> PromoteUpperTo(D /* tag */, Vec128<int16_t> v) {
+  return Vec128<int32_t>(vmovl_high_s16(v.raw));
+}
+template <class D, HWY_IF_I64_D(D)>
+HWY_API Vec128<int64_t> PromoteUpperTo(D /* tag */, Vec128<int32_t> v) {
+  return Vec128<int64_t>(vmovl_high_s32(v.raw));
+}
+
+#if HWY_NEON_HAVE_FLOAT16C
+
+template <class D, HWY_IF_F32_D(D)>
+HWY_API Vec128<float> PromoteUpperTo(D /* tag */, Vec128<float16_t> v) {
+  return Vec128<float>(vcvt_high_f32_f16(v.raw));
+}
+
+#endif  // HWY_NEON_HAVE_FLOAT16C
+
+template <class D, HWY_IF_V_SIZE_D(D, 16), HWY_IF_F32_D(D)>
+HWY_API VFromD<D> PromoteUpperTo(D df32, VFromD<Repartition<bfloat16_t, D>> v) {
+  const Repartition<uint16_t, decltype(df32)> du16;
+  const RebindToSigned<decltype(df32)> di32;
+  return BitCast(df32, ShiftLeft<16>(PromoteUpperTo(di32, BitCast(du16, v))));
+}
+
+#if HWY_HAVE_FLOAT64
+
+template <class D, HWY_IF_F64_D(D)>
+HWY_API Vec128<double> PromoteUpperTo(D /* tag */, Vec128<float> v) {
+  return Vec128<double>(vcvt_high_f64_f32(v.raw));
+}
+
+template <class D, HWY_IF_F64_D(D)>
+HWY_API Vec128<double> PromoteUpperTo(D /* tag */, Vec128<int32_t> v) {
+  const int64x2_t i64 = vmovl_high_s32(v.raw);
+  return Vec128<double>(vcvtq_f64_s64(i64));
+}
+
+#endif  // HWY_HAVE_FLOAT64
+
+// Generic version for <=64 bit input/output (_high is only for full vectors).
+template <class D, HWY_IF_V_SIZE_LE_D(D, 8), class V>
+HWY_API VFromD<D> PromoteUpperTo(D d, V v) {
+  const Rebind<TFromV<V>, decltype(d)> dh;
+  return PromoteTo(d, UpperHalf(dh, v));
+}
+
+#endif  // HWY_ARCH_ARM_A64
+
 // ------------------------------ DemoteTo (ConvertTo)
 
 // From full vector to half or quarter
@@ -5174,9 +5284,8 @@ HWY_INLINE V SlideUpLanes(V v, size_t amt) {
   const DFromV<decltype(v)> d;
   using TU = UnsignedFromSize<d.MaxBytes()>;
   const Repartition<TU, decltype(d)> du;
-  return BitCast(d,
-                 BitCast(du, v) << Set(
-                     du, static_cast<TU>(amt * sizeof(TFromV<V>) * 8)));
+  return BitCast(d, BitCast(du, v) << Set(
+                        du, static_cast<TU>(amt * sizeof(TFromV<V>) * 8)));
 }
 
 template <class V, HWY_IF_V_SIZE_V(V, 16)>
@@ -5539,6 +5648,49 @@ HWY_API Vec32<int32_t> ReorderWidenMulAccumulate(D d32, Vec32<int16_t> a,
   return sum0 + mul0;
 }
 
+template <class D, HWY_IF_U32_D(D)>
+HWY_API Vec128<uint32_t> ReorderWidenMulAccumulate(D /*d32*/,
+                                                   Vec128<uint16_t> a,
+                                                   Vec128<uint16_t> b,
+                                                   const Vec128<uint32_t> sum0,
+                                                   Vec128<uint32_t>& sum1) {
+#if HWY_ARCH_ARM_A64
+  sum1 = Vec128<uint32_t>(vmlal_high_u16(sum1.raw, a.raw, b.raw));
+#else
+  const Full64<uint16_t> dh;
+  sum1 = Vec128<uint32_t>(
+      vmlal_u16(sum1.raw, UpperHalf(dh, a).raw, UpperHalf(dh, b).raw));
+#endif
+  return Vec128<uint32_t>(
+      vmlal_u16(sum0.raw, LowerHalf(a).raw, LowerHalf(b).raw));
+}
+
+template <class D, HWY_IF_U32_D(D)>
+HWY_API Vec64<uint32_t> ReorderWidenMulAccumulate(D d32, Vec64<uint16_t> a,
+                                                  Vec64<uint16_t> b,
+                                                  const Vec64<uint32_t> sum0,
+                                                  Vec64<uint32_t>& sum1) {
+  // vmlal writes into the upper half, which the caller cannot use, so
+  // split into two halves.
+  const Vec128<uint32_t> mul_3210(vmull_u16(a.raw, b.raw));
+  const Vec64<uint32_t> mul_32 = UpperHalf(d32, mul_3210);
+  sum1 += mul_32;
+  return sum0 + LowerHalf(mul_3210);
+}
+
+template <class D, HWY_IF_U32_D(D)>
+HWY_API Vec32<uint32_t> ReorderWidenMulAccumulate(D du32, Vec32<uint16_t> a,
+                                                  Vec32<uint16_t> b,
+                                                  const Vec32<uint32_t> sum0,
+                                                  Vec32<uint32_t>& sum1) {
+  const Vec128<uint32_t> mul_xx10(vmull_u16(a.raw, b.raw));
+  const Vec64<uint32_t> mul_10(LowerHalf(mul_xx10));
+  const Vec32<uint32_t> mul0 = LowerHalf(du32, mul_10);
+  const Vec32<uint32_t> mul1 = UpperHalf(du32, mul_10);
+  sum1 += mul1;
+  return sum0 + mul0;
+}
+
 // ------------------------------ Combine partial (InterleaveLower)
 // < 64bit input, <= 64 bit result
 template <class D, HWY_IF_V_SIZE_LE_D(D, 8)>
@@ -5592,6 +5744,34 @@ HWY_API Vec32<int32_t> RearrangeToOddPlusEven(Vec32<int32_t> sum0,
   return sum0 + sum1;
 }
 
+HWY_API Vec128<uint32_t> RearrangeToOddPlusEven(Vec128<uint32_t> sum0,
+                                                Vec128<uint32_t> sum1) {
+// vmlal_s16 multiplied the lower half into sum0 and upper into sum1.
+#if HWY_ARCH_ARM_A64  // pairwise sum is available and what we want
+  return Vec128<uint32_t>(vpaddq_u32(sum0.raw, sum1.raw));
+#else
+  const Full128<uint32_t> d;
+  const Half<decltype(d)> d64;
+  const Vec64<uint32_t> hi(
+      vpadd_u32(LowerHalf(d64, sum1).raw, UpperHalf(d64, sum1).raw));
+  const Vec64<uint32_t> lo(
+      vpadd_u32(LowerHalf(d64, sum0).raw, UpperHalf(d64, sum0).raw));
+  return Combine(Full128<uint32_t>(), hi, lo);
+#endif
+}
+
+HWY_API Vec64<uint32_t> RearrangeToOddPlusEven(Vec64<uint32_t> sum0,
+                                               Vec64<uint32_t> sum1) {
+  // vmlal_u16 multiplied the lower half into sum0 and upper into sum1.
+  return Vec64<uint32_t>(vpadd_u32(sum0.raw, sum1.raw));
+}
+
+HWY_API Vec32<uint32_t> RearrangeToOddPlusEven(Vec32<uint32_t> sum0,
+                                               Vec32<uint32_t> sum1) {
+  // Only one widened sum per register, so add them for sum of odd and even.
+  return sum0 + sum1;
+}
+
 // ------------------------------ WidenMulPairwiseAdd
 
 #if HWY_NEON_HAVE_BFLOAT16
@@ -5622,13 +5802,13 @@ HWY_API VFromD<D32> WidenMulPairwiseAdd(
   const VU32 be = ShiftLeft<16>(BitCast(du32, b));
   const VU32 bo = And(BitCast(du32, b), odd);
   return MulAdd(BitCast(df32, ae), BitCast(df32, be),
-            Mul(BitCast(df32, ao), BitCast(df32, bo)));
+                Mul(BitCast(df32, ao), BitCast(df32, bo)));
 }
 #endif  // HWY_NEON_HAVE_BFLOAT16
 
 template <class D, HWY_IF_I32_D(D)>
 HWY_API Vec128<int32_t> WidenMulPairwiseAdd(D /*d32*/, Vec128<int16_t> a,
-                                                  Vec128<int16_t> b) {
+                                            Vec128<int16_t> b) {
   Vec128<int32_t> sum1;
 #if HWY_ARCH_ARM_A64
   sum1 = Vec128<int32_t>(vmull_high_s16(a.raw, b.raw));
@@ -5643,7 +5823,7 @@ HWY_API Vec128<int32_t> WidenMulPairwiseAdd(D /*d32*/, Vec128<int16_t> a,
 
 template <class D, HWY_IF_I32_D(D)>
 HWY_API Vec64<int32_t> WidenMulPairwiseAdd(D d32, Vec64<int16_t> a,
-                                                 Vec64<int16_t> b) {
+                                           Vec64<int16_t> b) {
   // vmlal writes into the upper half, which the caller cannot use, so
   // split into two halves.
   const Vec128<int32_t> mul_3210(vmull_s16(a.raw, b.raw));
@@ -5654,7 +5834,7 @@ HWY_API Vec64<int32_t> WidenMulPairwiseAdd(D d32, Vec64<int16_t> a,
 
 template <class D, HWY_IF_I32_D(D)>
 HWY_API Vec32<int32_t> WidenMulPairwiseAdd(D d32, Vec32<int16_t> a,
-                                                 Vec32<int16_t> b) {
+                                           Vec32<int16_t> b) {
   const Vec128<int32_t> mul_xx10(vmull_s16(a.raw, b.raw));
   const Vec64<int32_t> mul_10(LowerHalf(mul_xx10));
   const Vec32<int32_t> mul0 = LowerHalf(d32, mul_10);
@@ -5662,6 +5842,42 @@ HWY_API Vec32<int32_t> WidenMulPairwiseAdd(D d32, Vec32<int16_t> a,
   return RearrangeToOddPlusEven(mul0, mul1);
 }
 
+template <class D, HWY_IF_U32_D(D)>
+HWY_API Vec128<uint32_t> WidenMulPairwiseAdd(D /*d32*/, Vec128<uint16_t> a,
+                                             Vec128<uint16_t> b) {
+  Vec128<uint32_t> sum1;
+#if HWY_ARCH_ARM_A64
+  sum1 = Vec128<uint32_t>(vmull_high_u16(a.raw, b.raw));
+#else
+  const Full64<uint16_t> dh;
+  sum1 =
+      Vec128<uint32_t>(vmull_u16(UpperHalf(dh, a).raw, UpperHalf(dh, b).raw));
+#endif
+  Vec128<uint32_t> sum0 =
+      Vec128<uint32_t>(vmull_u16(LowerHalf(a).raw, LowerHalf(b).raw));
+  return RearrangeToOddPlusEven(sum0, sum1);
+}
+
+template <class D, HWY_IF_U32_D(D)>
+HWY_API Vec64<uint32_t> WidenMulPairwiseAdd(D d32, Vec64<uint16_t> a,
+                                            Vec64<uint16_t> b) {
+  // vmlal writes into the upper half, which the caller cannot use, so
+  // split into two halves.
+  const Vec128<uint32_t> mul_3210(vmull_u16(a.raw, b.raw));
+  const Vec64<uint32_t> mul0 = LowerHalf(mul_3210);
+  const Vec64<uint32_t> mul1 = UpperHalf(d32, mul_3210);
+  return RearrangeToOddPlusEven(mul0, mul1);
+}
+
+template <class D, HWY_IF_U32_D(D)>
+HWY_API Vec32<uint32_t> WidenMulPairwiseAdd(D d32, Vec32<uint16_t> a,
+                                            Vec32<uint16_t> b) {
+  const Vec128<uint32_t> mul_xx10(vmull_u16(a.raw, b.raw));
+  const Vec64<uint32_t> mul_10(LowerHalf(mul_xx10));
+  const Vec32<uint32_t> mul0 = LowerHalf(d32, mul_10);
+  const Vec32<uint32_t> mul1 = UpperHalf(d32, mul_10);
+  return RearrangeToOddPlusEven(mul0, mul1);
+}
 
 // ------------------------------ ZeroExtendVector (Combine)
 
@@ -6285,6 +6501,34 @@ HWY_API VFromD<D> TruncateTo(D /* tag */, VFromD<Rebind<uint16_t, D>> v) {
 
 // Multiplies even lanes (0, 2 ..) and places the double-wide result into
 // even and the upper half into its odd neighbor lane.
+HWY_API Vec128<int16_t> MulEven(Vec128<int8_t> a, Vec128<int8_t> b) {
+  const DFromV<decltype(a)> d;
+  int8x16_t a_packed = ConcatEven(d, a, a).raw;
+  int8x16_t b_packed = ConcatEven(d, b, b).raw;
+  return Vec128<int16_t>(
+      vmull_s8(vget_low_s8(a_packed), vget_low_s8(b_packed)));
+}
+HWY_API Vec128<uint16_t> MulEven(Vec128<uint8_t> a, Vec128<uint8_t> b) {
+  const DFromV<decltype(a)> d;
+  uint8x16_t a_packed = ConcatEven(d, a, a).raw;
+  uint8x16_t b_packed = ConcatEven(d, b, b).raw;
+  return Vec128<uint16_t>(
+      vmull_u8(vget_low_u8(a_packed), vget_low_u8(b_packed)));
+}
+HWY_API Vec128<int32_t> MulEven(Vec128<int16_t> a, Vec128<int16_t> b) {
+  const DFromV<decltype(a)> d;
+  int16x8_t a_packed = ConcatEven(d, a, a).raw;
+  int16x8_t b_packed = ConcatEven(d, b, b).raw;
+  return Vec128<int32_t>(
+      vmull_s16(vget_low_s16(a_packed), vget_low_s16(b_packed)));
+}
+HWY_API Vec128<uint32_t> MulEven(Vec128<uint16_t> a, Vec128<uint16_t> b) {
+  const DFromV<decltype(a)> d;
+  uint16x8_t a_packed = ConcatEven(d, a, a).raw;
+  uint16x8_t b_packed = ConcatEven(d, b, b).raw;
+  return Vec128<uint32_t>(
+      vmull_u16(vget_low_u16(a_packed), vget_low_u16(b_packed)));
+}
 HWY_API Vec128<int64_t> MulEven(Vec128<int32_t> a, Vec128<int32_t> b) {
   const DFromV<decltype(a)> d;
   int32x4_t a_packed = ConcatEven(d, a, a).raw;
@@ -6300,6 +6544,42 @@ HWY_API Vec128<uint64_t> MulEven(Vec128<uint32_t> a, Vec128<uint32_t> b) {
       vmull_u32(vget_low_u32(a_packed), vget_low_u32(b_packed)));
 }
 
+template <size_t N>
+HWY_API Vec128<int16_t, (N + 1) / 2> MulEven(Vec128<int8_t, N> a,
+                                             Vec128<int8_t, N> b) {
+  const DFromV<decltype(a)> d;
+  int8x8_t a_packed = ConcatEven(d, a, a).raw;
+  int8x8_t b_packed = ConcatEven(d, b, b).raw;
+  return Vec128<int16_t, (N + 1) / 2>(
+      vget_low_s16(vmull_s8(a_packed, b_packed)));
+}
+template <size_t N>
+HWY_API Vec128<uint16_t, (N + 1) / 2> MulEven(Vec128<uint8_t, N> a,
+                                              Vec128<uint8_t, N> b) {
+  const DFromV<decltype(a)> d;
+  uint8x8_t a_packed = ConcatEven(d, a, a).raw;
+  uint8x8_t b_packed = ConcatEven(d, b, b).raw;
+  return Vec128<uint16_t, (N + 1) / 2>(
+      vget_low_u16(vmull_u8(a_packed, b_packed)));
+}
+template <size_t N>
+HWY_API Vec128<int32_t, (N + 1) / 2> MulEven(Vec128<int16_t, N> a,
+                                             Vec128<int16_t, N> b) {
+  const DFromV<decltype(a)> d;
+  int16x4_t a_packed = ConcatEven(d, a, a).raw;
+  int16x4_t b_packed = ConcatEven(d, b, b).raw;
+  return Vec128<int32_t, (N + 1) / 2>(
+      vget_low_s32(vmull_s16(a_packed, b_packed)));
+}
+template <size_t N>
+HWY_API Vec128<uint32_t, (N + 1) / 2> MulEven(Vec128<uint16_t, N> a,
+                                              Vec128<uint16_t, N> b) {
+  const DFromV<decltype(a)> d;
+  uint16x4_t a_packed = ConcatEven(d, a, a).raw;
+  uint16x4_t b_packed = ConcatEven(d, b, b).raw;
+  return Vec128<uint32_t, (N + 1) / 2>(
+      vget_low_u32(vmull_u16(a_packed, b_packed)));
+}
 template <size_t N>
 HWY_API Vec128<int64_t, (N + 1) / 2> MulEven(Vec128<int32_t, N> a,
                                              Vec128<int32_t, N> b) {
@@ -6323,6 +6603,106 @@ HWY_INLINE Vec128<uint64_t> MulEven(Vec128<uint64_t> a, Vec128<uint64_t> b) {
   uint64_t hi;
   uint64_t lo = Mul128(vgetq_lane_u64(a.raw, 0), vgetq_lane_u64(b.raw, 0), &hi);
   return Vec128<uint64_t>(vsetq_lane_u64(hi, vdupq_n_u64(lo), 1));
+}
+
+// Multiplies odd lanes (1, 3 ..) and places the double-wide result into
+// even and the upper half into its odd neighbor lane.
+HWY_API Vec128<int16_t> MulOdd(Vec128<int8_t> a, Vec128<int8_t> b) {
+  const DFromV<decltype(a)> d;
+  int8x16_t a_packed = ConcatOdd(d, a, a).raw;
+  int8x16_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<int16_t>(
+      vmull_s8(vget_low_s8(a_packed), vget_low_s8(b_packed)));
+}
+HWY_API Vec128<uint16_t> MulOdd(Vec128<uint8_t> a, Vec128<uint8_t> b) {
+  const DFromV<decltype(a)> d;
+  uint8x16_t a_packed = ConcatOdd(d, a, a).raw;
+  uint8x16_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<uint16_t>(
+      vmull_u8(vget_low_u8(a_packed), vget_low_u8(b_packed)));
+}
+HWY_API Vec128<int32_t> MulOdd(Vec128<int16_t> a, Vec128<int16_t> b) {
+  const DFromV<decltype(a)> d;
+  int16x8_t a_packed = ConcatOdd(d, a, a).raw;
+  int16x8_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<int32_t>(
+      vmull_s16(vget_low_s16(a_packed), vget_low_s16(b_packed)));
+}
+HWY_API Vec128<uint32_t> MulOdd(Vec128<uint16_t> a, Vec128<uint16_t> b) {
+  const DFromV<decltype(a)> d;
+  uint16x8_t a_packed = ConcatOdd(d, a, a).raw;
+  uint16x8_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<uint32_t>(
+      vmull_u16(vget_low_u16(a_packed), vget_low_u16(b_packed)));
+}
+HWY_API Vec128<int64_t> MulOdd(Vec128<int32_t> a, Vec128<int32_t> b) {
+  const DFromV<decltype(a)> d;
+  int32x4_t a_packed = ConcatOdd(d, a, a).raw;
+  int32x4_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<int64_t>(
+      vmull_s32(vget_low_s32(a_packed), vget_low_s32(b_packed)));
+}
+HWY_API Vec128<uint64_t> MulOdd(Vec128<uint32_t> a, Vec128<uint32_t> b) {
+  const DFromV<decltype(a)> d;
+  uint32x4_t a_packed = ConcatOdd(d, a, a).raw;
+  uint32x4_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<uint64_t>(
+      vmull_u32(vget_low_u32(a_packed), vget_low_u32(b_packed)));
+}
+
+template <size_t N>
+HWY_API Vec128<int16_t, (N + 1) / 2> MulOdd(Vec128<int8_t, N> a,
+                                            Vec128<int8_t, N> b) {
+  const DFromV<decltype(a)> d;
+  int8x8_t a_packed = ConcatOdd(d, a, a).raw;
+  int8x8_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<int16_t, (N + 1) / 2>(
+      vget_low_s16(vmull_s8(a_packed, b_packed)));
+}
+template <size_t N>
+HWY_API Vec128<uint16_t, (N + 1) / 2> MulOdd(Vec128<uint8_t, N> a,
+                                             Vec128<uint8_t, N> b) {
+  const DFromV<decltype(a)> d;
+  uint8x8_t a_packed = ConcatOdd(d, a, a).raw;
+  uint8x8_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<uint16_t, (N + 1) / 2>(
+      vget_low_u16(vmull_u8(a_packed, b_packed)));
+}
+template <size_t N>
+HWY_API Vec128<int32_t, (N + 1) / 2> MulOdd(Vec128<int16_t, N> a,
+                                            Vec128<int16_t, N> b) {
+  const DFromV<decltype(a)> d;
+  int16x4_t a_packed = ConcatOdd(d, a, a).raw;
+  int16x4_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<int32_t, (N + 1) / 2>(
+      vget_low_s32(vmull_s16(a_packed, b_packed)));
+}
+template <size_t N>
+HWY_API Vec128<uint32_t, (N + 1) / 2> MulOdd(Vec128<uint16_t, N> a,
+                                             Vec128<uint16_t, N> b) {
+  const DFromV<decltype(a)> d;
+  uint16x4_t a_packed = ConcatOdd(d, a, a).raw;
+  uint16x4_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<uint32_t, (N + 1) / 2>(
+      vget_low_u32(vmull_u16(a_packed, b_packed)));
+}
+template <size_t N>
+HWY_API Vec128<int64_t, (N + 1) / 2> MulOdd(Vec128<int32_t, N> a,
+                                            Vec128<int32_t, N> b) {
+  const DFromV<decltype(a)> d;
+  int32x2_t a_packed = ConcatOdd(d, a, a).raw;
+  int32x2_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<int64_t, (N + 1) / 2>(
+      vget_low_s64(vmull_s32(a_packed, b_packed)));
+}
+template <size_t N>
+HWY_API Vec128<uint64_t, (N + 1) / 2> MulOdd(Vec128<uint32_t, N> a,
+                                             Vec128<uint32_t, N> b) {
+  const DFromV<decltype(a)> d;
+  uint32x2_t a_packed = ConcatOdd(d, a, a).raw;
+  uint32x2_t b_packed = ConcatOdd(d, b, b).raw;
+  return Vec128<uint64_t, (N + 1) / 2>(
+      vget_low_u64(vmull_u32(a_packed, b_packed)));
 }
 
 HWY_INLINE Vec128<uint64_t> MulOdd(Vec128<uint64_t> a, Vec128<uint64_t> b) {
@@ -6408,73 +6788,8 @@ HWY_API Vec128<uint8_t> AESKeyGenAssist(Vec128<uint8_t> v) {
 }
 #endif  // HWY_TARGET == HWY_NEON
 
-// ------------------------------ Scatter (Store)
-
-template <class D, typename T = TFromD<D>, class VI>
-HWY_API void ScatterOffset(VFromD<D> v, D d, T* HWY_RESTRICT base, VI offset) {
-  using TI = TFromV<VI>;
-  static_assert(sizeof(T) == sizeof(TI), "Index/lane size must match");
-
-  HWY_ALIGN T lanes[MaxLanes(d)];
-  Store(v, d, lanes);
-
-  HWY_ALIGN TI offset_lanes[MaxLanes(d)];
-  Store(offset, Rebind<TI, decltype(d)>(), offset_lanes);
-
-  uint8_t* base_bytes = reinterpret_cast<uint8_t*>(base);
-  for (size_t i = 0; i < MaxLanes(d); ++i) {
-    CopyBytes<sizeof(T)>(&lanes[i], base_bytes + offset_lanes[i]);
-  }
-}
-
-template <class D, typename T = TFromD<D>, class VI>
-HWY_API void ScatterIndex(VFromD<D> v, D d, T* HWY_RESTRICT base, VI index) {
-  using TI = TFromV<VI>;
-  static_assert(sizeof(T) == sizeof(TI), "Index/lane size must match");
-
-  HWY_ALIGN T lanes[MaxLanes(d)];
-  Store(v, d, lanes);
-
-  HWY_ALIGN TI index_lanes[MaxLanes(d)];
-  Store(index, Rebind<TI, decltype(d)>(), index_lanes);
-
-  for (size_t i = 0; i < MaxLanes(d); ++i) {
-    base[index_lanes[i]] = lanes[i];
-  }
-}
-
-// ------------------------------ Gather (Load/Store)
-
-template <class D, typename T = TFromD<D>, class VI>
-HWY_API VFromD<D> GatherOffset(D d, const T* HWY_RESTRICT base, VI offset) {
-  using TI = TFromV<VI>;
-  static_assert(sizeof(T) == sizeof(TI), "Index/lane size must match");
-
-  HWY_ALIGN TI offset_lanes[MaxLanes(d)];
-  Store(offset, Rebind<TI, decltype(d)>(), offset_lanes);
-
-  HWY_ALIGN T lanes[MaxLanes(d)];
-  const uint8_t* base_bytes = reinterpret_cast<const uint8_t*>(base);
-  for (size_t i = 0; i < MaxLanes(d); ++i) {
-    CopyBytes<sizeof(T)>(base_bytes + offset_lanes[i], &lanes[i]);
-  }
-  return Load(d, lanes);
-}
-
-template <class D, typename T = TFromD<D>, class VI>
-HWY_API VFromD<D> GatherIndex(D d, const T* HWY_RESTRICT base, VI index) {
-  using TI = TFromV<VI>;
-  static_assert(sizeof(T) == sizeof(TI), "Index/lane size must match");
-
-  HWY_ALIGN TI index_lanes[MaxLanes(d)];
-  Store(index, Rebind<TI, decltype(d)>(), index_lanes);
-
-  HWY_ALIGN T lanes[MaxLanes(d)];
-  for (size_t i = 0; i < MaxLanes(d); ++i) {
-    lanes[i] = base[index_lanes[i]];
-  }
-  return Load(d, lanes);
-}
+// ------------------------------ Scatter in generic_ops-inl.h
+// ------------------------------ Gather in generic_ops-inl.h
 
 // ------------------------------ Reductions
 

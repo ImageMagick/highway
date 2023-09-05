@@ -381,6 +381,7 @@ HWY_TESTS = [
     ("hwy/tests/", "demote_test"),
     ("hwy/tests/", "expand_test"),
     ("hwy/tests/", "float_test"),
+    ("hwy/tests/", "foreach_vec_test"),
     ("hwy/tests/", "if_test"),
     ("hwy/tests/", "interleaved_test"),
     ("hwy/tests/", "logical_test"),
@@ -399,6 +400,7 @@ HWY_TESTS = [
     ("hwy/tests/", "table_test"),
     ("hwy/tests/", "test_util_test"),
     ("hwy/tests/", "tuple_test"),
+    ("hwy/tests/", "widen_mul_test"),
 ]
 
 HWY_TEST_COPTS = select({

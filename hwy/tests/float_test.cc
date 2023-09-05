@@ -44,7 +44,7 @@ struct TestDiv {
     auto expected = AllocateAligned<T>(N);
     HWY_ASSERT(expected);
     for (size_t i = 0; i < N; ++i) {
-      expected[i] = (T(i) - 2) / T(2);
+      expected[i] = static_cast<T>((static_cast<double>(i) - 2.0) / 2.0);
     }
     HWY_ASSERT_VEC_EQ(d, expected.get(), Div(v, Set(d, T(2))));
   }
@@ -113,8 +113,8 @@ struct TestReciprocalSquareRoot {
     Store(ApproximateReciprocalSqrt(v), d, lanes.get());
     for (size_t i = 0; i < N; ++i) {
       T err = lanes[i] - 0.090166f;
-      if (err < 0.0f) err = -err;
-      if (err >= 4E-4f) {
+      if (err < T{0}) err = -err;
+      if (static_cast<double>(err) >= 4E-4) {
         HWY_ABORT("Lane %d (%d): actual %f err %f\n", static_cast<int>(i),
                   static_cast<int>(N), static_cast<double>(lanes[i]),
                   static_cast<double>(err));

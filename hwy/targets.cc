@@ -34,7 +34,7 @@
 #include <cpuid.h>
 #endif  // HWY_COMPILER_MSVC
 
-#elif (HWY_ARCH_ARM || HWY_ARCH_PPC) && HWY_OS_LINUX
+#elif (HWY_ARCH_ARM || HWY_ARCH_PPC || HWY_ARCH_S390X) && HWY_OS_LINUX
 // sys/auxv.h does not always include asm/hwcap.h, or define HWCAP*, hence we
 // still include this directly. See #1199.
 #ifndef TOOLCHAIN_MISS_ASM_HWCAP_H
@@ -354,12 +354,16 @@ int64_t DetectTargets() {
   }
 #endif
 
-#if defined(HWCAP2_SVE2) && defined(HWCAP2_SVEAES)
+#ifndef HWCAP2_SVE2
+#define HWCAP2_SVE2 (1 << 1)
+#endif
+#ifndef HWCAP2_SVEAES
+#define HWCAP2_SVEAES (1 << 2)
+#endif
   const CapBits hw2 = getauxval(AT_HWCAP2);
   if ((hw2 & HWCAP2_SVE2) && (hw2 & HWCAP2_SVEAES)) {
     bits |= HWY_SVE2;
   }
-#endif
 
 #else  // !HWY_ARCH_ARM_A64
 
@@ -441,6 +445,45 @@ int64_t DetectTargets() {
   return bits;
 }
 }  // namespace ppc
+#elif HWY_ARCH_S390X && HWY_HAVE_RUNTIME_DISPATCH
+namespace s390x {
+
+#ifndef HWCAP_S390_VX
+#define HWCAP_S390_VX 2048
+#endif
+
+#ifndef HWCAP_S390_VXE
+#define HWCAP_S390_VXE 8192
+#endif
+
+#ifndef HWCAP_S390_VXRS_EXT2
+#define HWCAP_S390_VXRS_EXT2 32768
+#endif
+
+using CapBits = unsigned long;  // NOLINT
+
+constexpr CapBits kGroupZ14 = HWCAP_S390_VX | HWCAP_S390_VXE;
+constexpr CapBits kGroupZ15 =
+    HWCAP_S390_VX | HWCAP_S390_VXE | HWCAP_S390_VXRS_EXT2;
+
+int64_t DetectTargets() {
+  int64_t bits = 0;
+
+#if defined(AT_HWCAP)
+  const CapBits hw = getauxval(AT_HWCAP);
+
+  if ((hw & kGroupZ14) == kGroupZ14) {
+    bits |= HWY_Z14;
+  }
+
+  if ((hw & kGroupZ15) == kGroupZ15) {
+    bits |= HWY_Z15;
+  }
+#endif
+
+  return bits;
+}
+}  // namespace s390x
 #endif  // HWY_ARCH_X86
 
 // Returns targets supported by the CPU, independently of DisableTargets.
@@ -457,6 +500,8 @@ int64_t DetectTargets() {
   bits |= arm::DetectTargets();
 #elif HWY_ARCH_PPC && HWY_HAVE_RUNTIME_DISPATCH
   bits |= ppc::DetectTargets();
+#elif HWY_ARCH_S390X && HWY_HAVE_RUNTIME_DISPATCH
+  bits |= s390x::DetectTargets();
 
 #else
   // TODO(janwas): detect support for WASM/RVV.

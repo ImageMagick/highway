@@ -9,20 +9,30 @@ freshness: { owner: 'janwas' reviewed: '2023-08-04' }
 
 ## Wishlist
 
-### Matrix multiplication extensions
+### F32RoundToNearestEven
+
+### NEON dot product
+
+### QuickSelect algo
 
 ### numpy
 
 NeUnordered
 
-Loadn/LoadnPair: mostly Gather*, with some specializations for smaller strides.
-In particular for 2x64-bit, which use 128-bit loads plus Combine.
+Loadn: Gather*, but for stride 2..4 use ld2..4.
+
+LoadnPair: Gather with optimizations in particular for 2x64-bit, which use
+128-bit loads plus Combine.
+Also StorePair
 
 Lookup128 for 32x 32-bit and 16x 64-bit. permutex2var on AVX-512, else Gather.
+Also Lookup64 and Lookup32.
 
-### SME/x86 AMX
+ReduceMin/MaxOrNaN
 
-Wrapper for 2D outer product.
+Document Reduce/Min NaN behavior
+
+_mm512_getmant, _mm512_scalef, _mm512_getexp (f32/f64)
 
 ### Clear lowest mask bit
 
@@ -67,9 +77,6 @@ For crypto. Native on Icelake+.
 *   New tuple interface for segment load/store
 *   Use new mask<->vec cast instruction, possibly for OddEven, ExpandLoad
 *   `rgather_vx` for broadcasting redsum result?
-*   Fix remaining 8-bit table lookups for large vectors (`Broadcast`,
-    `Interleave`): use 64-bit for initial shuffle. For `TwoTablesLookupLanes`,
-    use 16-bit indices.
 
 ### SVE codegen
 
@@ -87,25 +94,15 @@ For crypto. Native on Icelake+.
 ### Add emu256 target
 Reuse same wasm256 file, `#if` for wasm-specific parts. Use reserved avx slot.
 
-### Reductions for 8-bit
-For orthogonality; already done for x86+NEON.
-
 ### Conflict detection
 For hash tables. Use VPCONFLICT on ZEN4.
 
-### `PromoteEvenTo`
-
-For `WidenMul`, `MinOfLanes`.
-
-### Masked add/sub
-For tolower (subtract if in range) or hash table probing.
-
 ### Div (integer division) and Mod
 
-Issue 633. Consider promoting to f64 and back.
+Issue 633. Consider promoting to f64 and back. Or: op to compute inverse.
 
-### `AddSub`
-Interval arithmetic?
+### `AddSub` and `MulAddSub`
+Subtracts for even lanes, adds for odd. Interval arithmetic? Numpy?
 
 ### `Dup128TableLookupBytes`
 Avoids having to add offset on RVV. Table must come from `LoadDup128`.
@@ -187,3 +184,8 @@ For SVE (svld1sb_u32)+WASM? Compiler can probably already fuse.
 *   ~~MaskedScatter~~
 *   ~~float64 support for WASM~~
 *   ~~LoadNOr~~
+*   ~~PromoteEvenTo~~ - by johnplatts
+*   ~~Masked add/sub/div~~
+*   ~~ReduceMin/Max like ReduceSum, in addition to Min/MaxOfLanes~~
+*   ~~Reductions for 8-bit~~
+*   ~~RVV: Fix remaining 8-bit table lookups for large vectors~~

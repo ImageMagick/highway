@@ -1,7 +1,10 @@
-load("@rules_license//rules:license.bzl", "license")
+# Placeholder#1 for Guitar, do not remove
 load("@bazel_skylib//lib:selects.bzl", "selects")
+load("@rules_license//rules:license.bzl", "license")
 
 load("@rules_cc//cc:defs.bzl", "cc_test")
+# Placeholder#2 for Guitar, do not remove
+
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//visibility:public"],
@@ -54,7 +57,9 @@ selects.config_setting_group(
 
 config_setting(
     name = "compiler_emscripten",
-    values = {"cpu": "wasm32"},
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+    ],
 )
 
 # See https://github.com/bazelbuild/bazel/issues/12707
@@ -205,6 +210,51 @@ cc_library(
 )
 
 cc_library(
+    name = "nanobenchmark",
+    srcs = [
+        "hwy/nanobenchmark.cc",
+        "hwy/timer.cc",
+    ],
+    hdrs = [
+        "hwy/nanobenchmark.h",
+        "hwy/robust_statistics.h",
+        "hwy/timer.h",
+    ],
+    compatible_with = [],
+    copts = COPTS,
+    local_defines = ["hwy_EXPORTS"],
+    textual_hdrs = [
+        "hwy/timer-inl.h",
+    ],
+    deps = [":hwy"],
+)
+
+cc_library(
+    name = "profiler",
+    hdrs = [
+        "hwy/profiler.h",
+    ],
+    compatible_with = [],
+    copts = COPTS,
+    deps = [
+        ":hwy",
+        ":nanobenchmark",
+        # "//hwy/contrib/sort:vqsort",
+    ],
+)
+
+cc_binary(
+    name = "profiler_example",
+    srcs = ["hwy/examples/profiler_example.cc"],
+    copts = COPTS,
+    deps = [
+        ":hwy",
+        ":nanobenchmark",
+        ":profiler",
+    ],
+)
+
+cc_library(
     name = "algo",
     compatible_with = [],
     copts = COPTS,
@@ -239,6 +289,33 @@ cc_library(
     ],
     deps = [
         ":hwy",
+    ],
+)
+
+cc_library(
+    name = "thread_pool",
+    hdrs = [
+        "hwy/contrib/thread_pool/futex.h",
+        "hwy/contrib/thread_pool/thread_pool.h",
+    ],
+    compatible_with = [],
+    copts = COPTS,
+    deps = [
+        ":hwy",  # HWY_ASSERT
+    ],
+)
+
+cc_library(
+    name = "matvec",
+    compatible_with = [],
+    copts = COPTS,
+    textual_hdrs = [
+        "hwy/contrib/matvec/matvec-inl.h",
+    ],
+    deps = [
+        ":hwy",
+        ":nanobenchmark",
+        ":thread_pool",
     ],
 )
 
@@ -301,26 +378,6 @@ cc_library(
     ],
 )
 
-cc_library(
-    name = "nanobenchmark",
-    srcs = [
-        "hwy/nanobenchmark.cc",
-        "hwy/timer.cc",
-    ],
-    hdrs = [
-        "hwy/nanobenchmark.h",
-        "hwy/robust_statistics.h",
-        "hwy/timer.h",
-    ],
-    compatible_with = [],
-    copts = COPTS,
-    local_defines = ["hwy_EXPORTS"],
-    textual_hdrs = [
-        "hwy/timer-inl.h",
-    ],
-    deps = [":hwy"],
-)
-
 cc_binary(
     name = "benchmark",
     srcs = ["hwy/examples/benchmark.cc"],
@@ -359,6 +416,8 @@ HWY_TESTS = [
     ("hwy/contrib/dot/", "dot_test"),
     ("hwy/contrib/image/", "image_test"),
     ("hwy/contrib/math/", "math_test"),
+    ("hwy/contrib/matvec/", "matvec_test"),
+    ("hwy/contrib/thread_pool/", "thread_pool_test"),
     ("hwy/contrib/unroller/", "unroller_test"),
     # contrib/sort has its own BUILD, we also add sort_test to GUITAR_TESTS.
     # To run bench_sort, specify --test=hwy/contrib/sort:bench_sort.
@@ -379,15 +438,20 @@ HWY_TESTS = [
     ("hwy/tests/", "count_test"),
     ("hwy/tests/", "crypto_test"),
     ("hwy/tests/", "demote_test"),
+    ("hwy/tests/", "dup128_vec_test"),
     ("hwy/tests/", "expand_test"),
     ("hwy/tests/", "float_test"),
     ("hwy/tests/", "foreach_vec_test"),
     ("hwy/tests/", "if_test"),
     ("hwy/tests/", "interleaved_test"),
     ("hwy/tests/", "logical_test"),
+    ("hwy/tests/", "mask_combine_test"),
+    ("hwy/tests/", "mask_convert_test"),
     ("hwy/tests/", "mask_mem_test"),
     ("hwy/tests/", "mask_test"),
+    ("hwy/tests/", "masked_arithmetic_test"),
     ("hwy/tests/", "memory_test"),
+    ("hwy/tests/", "minmax_test"),
     ("hwy/tests/", "mul_test"),
     ("hwy/tests/", "reduction_test"),
     ("hwy/tests/", "resize_test"),
@@ -395,10 +459,12 @@ HWY_TESTS = [
     ("hwy/tests/", "shift_test"),
     ("hwy/tests/", "shuffle4_test"),
     ("hwy/tests/", "slide_up_down_test"),
+    ("hwy/tests/", "sums_abs_diff_test"),
     ("hwy/tests/", "swizzle_block_test"),
     ("hwy/tests/", "swizzle_test"),
     ("hwy/tests/", "table_test"),
     ("hwy/tests/", "test_util_test"),
+    ("hwy/tests/", "truncate_test"),
     ("hwy/tests/", "tuple_test"),
     ("hwy/tests/", "widen_mul_test"),
 ]
@@ -421,8 +487,10 @@ HWY_TEST_DEPS = [
     ":hwy_test_util",
     ":image",
     ":math",
+    ":matvec",
     ":nanobenchmark",
     ":skeleton",
+    ":thread_pool",
     ":unroller",
     "//hwy/contrib/sort:vqsort",
     "@com_google_googletest//:gtest_main",

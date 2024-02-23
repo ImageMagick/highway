@@ -72,11 +72,14 @@ us via the below email.
 
 *   Browsers: Chromium (+Vivaldi), Firefox (+floorp / foxhound / librewolf / Waterfox)
 *   Cryptography: google/distributed_point_functions
+*   Data structures: bkille/BitLib
 *   Image codecs: eustas/2im, [Grok JPEG 2000](https://github.com/GrokImageCompression/grok), [JPEG XL](https://github.com/libjxl/libjxl), OpenHTJ2K, [JPEGenc](https://github.com/osamu620/JPEGenc)
-*   Image processing: cloudinary/ssimulacra2, m-ab-s/media-autobuild_suite
+*   Image processing: cloudinary/ssimulacra2, m-ab-s/media-autobuild_suite, [libvips](https://github.com/libvips/libvips)
 *   Image viewers: AlienCowEatCake/ImageViewer, mirillis/jpegxl-wic,
     [Lux panorama/image viewer](https://bitbucket.org/kfj/pv/)
 *   Information retrieval: [iresearch database index](https://github.com/iresearch-toolkit/iresearch/blob/e7638e7a4b99136ca41f82be6edccf01351a7223/core/utils/simd_utils.hpp), michaeljclark/zvec
+*   Machine learning: Tensorflow, Numpy, zpye/SimpleInfer
+*   Voxels: rools/voxl
 
 Other
 
@@ -98,10 +101,11 @@ https://repology.org/project/highway-simd-library/versions .
 
 ### Targets
 
-Highway supports 20 targets, listed in alphabetical order of platform:
+Highway supports 22 targets, listed in alphabetical order of platform:
 
 -   Any: `EMU128`, `SCALAR`;
 -   Arm: `NEON` (Armv7+), `SVE`, `SVE2`, `SVE_256`, `SVE2_128`;
+-   IBM Z: `Z14`, `Z15`;
 -   POWER: `PPC8` (v2.07), `PPC9` (v3.0), `PPC10` (v3.1B, not yet supported
     due to compiler bugs, see #1207; also requires QEMU 7.2);
 -   RISC-V: `RVV` (1.0);
@@ -261,7 +265,9 @@ be prefixed with `HWY_ATTR`, OR reside between `HWY_BEFORE_NAMESPACE()` and
 their opening brace.
 
 The entry points into code using Highway differ slightly depending on whether
-they use static or dynamic dispatch.
+they use static or dynamic dispatch. In both cases, we recommend that the
+top-level function receives one or more pointers to arrays, rather than
+target-specific vector types.
 
 *   For static dispatch, `HWY_TARGET` will be the best available target among
     `HWY_BASELINE_TARGETS`, i.e. those allowed for use by the compiler (see
@@ -276,7 +282,11 @@ they use static or dynamic dispatch.
     call the best function pointer for the current CPU's supported targets. A
     module is automatically compiled for each target in `HWY_TARGETS` (see
     [quick-reference](g3doc/quick_reference.md)) if `HWY_TARGET_INCLUDE` is
-    defined and `foreach_target.h` is included.
+    defined and `foreach_target.h` is included. Note that the first invocation
+    of `HWY_DYNAMIC_DISPATCH`, or each call to the pointer returned by the first
+    invocation of `HWY_DYNAMIC_POINTER`, involves some CPU detection overhead.
+    You can prevent this by calling the following before any invocation of
+    `HWY_DYNAMIC_*`: `hwy::GetChosenTarget().Update(hwy::SupportedTargets());`.
 
 When using dynamic dispatch, `foreach_target.h` is included from translation
 units (.cc files), not headers. Headers containing vector code shared between

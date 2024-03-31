@@ -16,3 +16,5 @@ HWY_STATIC_DEFINE
 [EXCLUDES]
 nanobenchmark.cc
 *_test.cc
+
+[ONLY_IMAGEMAGICK7]

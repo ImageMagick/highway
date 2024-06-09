@@ -26,6 +26,7 @@
 #endif
 
 #include "hwy/detect_compiler_arch.h"
+#include "hwy/detect_targets.h"
 
 // Separate header because foreach_target.h re-enables its include guard.
 #include "hwy/ops/set_macros-inl.h"
@@ -61,6 +62,10 @@ namespace HWY_NAMESPACE {
 // We therefore pass by const& only on GCC and (Windows or aarch64). This alias
 // must be used for all vector/mask parameters of functions marked HWY_NOINLINE,
 // and possibly also other functions that are not inlined.
+//
+// Even better is to avoid passing vector arguments to non-inlined functions,
+// because the SVE and RISC-V ABIs are still works in progress and may lead to
+// incorrect codegen.
 #if HWY_COMPILER_GCC_ACTUAL && (HWY_OS_WIN || HWY_ARCH_ARM_A64)
 template <class V>
 using VecArg = const V&;
@@ -529,6 +534,8 @@ HWY_API bool IsAligned(D d, T* ptr) {
 
 // Same as base.h macros but with a Simd<T, N, kPow2> argument instead of T.
 #define HWY_IF_UNSIGNED_D(D) HWY_IF_UNSIGNED(hwy::HWY_NAMESPACE::TFromD<D>)
+#define HWY_IF_NOT_UNSIGNED_D(D) \
+  HWY_IF_NOT_UNSIGNED(hwy::HWY_NAMESPACE::TFromD<D>)
 #define HWY_IF_SIGNED_D(D) HWY_IF_SIGNED(hwy::HWY_NAMESPACE::TFromD<D>)
 #define HWY_IF_FLOAT_D(D) HWY_IF_FLOAT(hwy::HWY_NAMESPACE::TFromD<D>)
 #define HWY_IF_NOT_FLOAT_D(D) HWY_IF_NOT_FLOAT(hwy::HWY_NAMESPACE::TFromD<D>)
@@ -609,6 +616,8 @@ HWY_API bool IsAligned(D d, T* ptr) {
 
 // Same, but with a vector argument. ops/*-inl.h define their own TFromV.
 #define HWY_IF_UNSIGNED_V(V) HWY_IF_UNSIGNED(hwy::HWY_NAMESPACE::TFromV<V>)
+#define HWY_IF_NOT_UNSIGNED_V(V) \
+  HWY_IF_NOT_UNSIGNED(hwy::HWY_NAMESPACE::TFromV<V>)
 #define HWY_IF_SIGNED_V(V) HWY_IF_SIGNED(hwy::HWY_NAMESPACE::TFromV<V>)
 #define HWY_IF_FLOAT_V(V) HWY_IF_FLOAT(hwy::HWY_NAMESPACE::TFromV<V>)
 #define HWY_IF_NOT_FLOAT_V(V) HWY_IF_NOT_FLOAT(hwy::HWY_NAMESPACE::TFromV<V>)
@@ -645,6 +654,20 @@ HWY_API bool IsAligned(D d, T* ptr) {
 
 #undef HWY_IF_MINMAX_OF_LANES_D
 #define HWY_IF_MINMAX_OF_LANES_D(D) HWY_IF_LANES_GT_D(D, 1)
+
+#undef HWY_IF_ADDSUB_V
+#define HWY_IF_ADDSUB_V(V) HWY_IF_LANES_GT_D(DFromV<V>, 1)
+
+#undef HWY_IF_MULADDSUB_V
+#define HWY_IF_MULADDSUB_V(V) HWY_IF_LANES_GT_D(DFromV<V>, 1)
+
+// HWY_IF_U2I_DEMOTE_FROM_LANE_SIZE_V is used to disable the default
+// implementation of unsigned to signed DemoteTo/ReorderDemote2To in
+// generic_ops-inl.h for at least some of the unsigned to signed demotions on
+// SCALAR/EMU128/SSE2/SSSE3/SSE4/AVX2/SVE/SVE2
+
+#undef HWY_IF_U2I_DEMOTE_FROM_LANE_SIZE_V
+#define HWY_IF_U2I_DEMOTE_FROM_LANE_SIZE_V(V) void* = nullptr
 
 // Old names (deprecated)
 #define HWY_IF_LANE_SIZE_D(D, bytes) HWY_IF_T_SIZE_D(D, bytes)

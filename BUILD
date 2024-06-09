@@ -156,6 +156,7 @@ COMPAT = [
 cc_library(
     name = "hwy",
     srcs = [
+        "hwy/abort.cc",
         "hwy/aligned_allocator.cc",
         "hwy/per_target.cc",
         "hwy/print.cc",
@@ -163,6 +164,7 @@ cc_library(
     ],
     # Normal headers with include guards
     hdrs = [
+        "hwy/abort.h",
         "hwy/aligned_allocator.h",
         "hwy/base.h",
         "hwy/cache_control.h",
@@ -189,10 +191,10 @@ cc_library(
         "hwy/ops/arm_sve-inl.h",
         "hwy/ops/emu128-inl.h",
         "hwy/ops/generic_ops-inl.h",
+        "hwy/ops/inside-inl.h",
         "hwy/ops/scalar-inl.h",
         "hwy/ops/set_macros-inl.h",
         "hwy/ops/shared-inl.h",
-        "hwy/ops/tuple-inl.h",
         "hwy/ops/x86_128-inl.h",
         "hwy/ops/x86_256-inl.h",
         "hwy/ops/x86_512-inl.h",
@@ -207,6 +209,19 @@ cc_library(
         "@platforms//cpu:riscv64": ["hwy/ops/rvv-inl.h"],
         "//conditions:default": [],
     }),
+)
+
+cc_library(
+    name = "stats",
+    srcs = [
+        "hwy/stats.cc",
+    ],
+    hdrs = [
+        "hwy/stats.h",
+    ],
+    compatible_with = [],
+    copts = COPTS,
+    deps = [":hwy"],
 )
 
 cc_library(
@@ -227,6 +242,16 @@ cc_library(
         "hwy/timer-inl.h",
     ],
     deps = [":hwy"],
+)
+
+cc_library(
+    name = "bit_set",
+    hdrs = ["hwy/bit_set.h"],
+    compatible_with = [],
+    copts = COPTS,
+    deps = [
+        ":hwy",  # HWY_ASSERT
+    ],
 )
 
 cc_library(
@@ -293,6 +318,18 @@ cc_library(
 )
 
 cc_library(
+    name = "topology",
+    srcs = ["hwy/contrib/thread_pool/topology.cc"],
+    hdrs = ["hwy/contrib/thread_pool/topology.h"],
+    compatible_with = [],
+    copts = COPTS,
+    deps = [
+        ":bit_set",
+        ":hwy",  # HWY_ASSERT
+    ],
+)
+
+cc_library(
     name = "thread_pool",
     hdrs = [
         "hwy/contrib/thread_pool/futex.h",
@@ -302,6 +339,9 @@ cc_library(
     copts = COPTS,
     deps = [
         ":hwy",  # HWY_ASSERT
+        ":nanobenchmark",
+        ":profiler",
+        ":stats",
     ],
 )
 
@@ -348,6 +388,18 @@ cc_library(
 )
 
 cc_library(
+    name = "random",
+    compatible_with = [],
+    copts = COPTS,
+    textual_hdrs = [
+        "hwy/contrib/random/random-inl.h",
+    ],
+    deps = [
+        ":hwy",
+    ],
+)
+
+cc_library(
     name = "unroller",
     compatible_with = [],
     copts = COPTS,
@@ -375,6 +427,7 @@ cc_library(
     # GUNIT_INTERNAL_BUILD_MODE defined by the test.
     deps = [
         ":hwy",
+        ":nanobenchmark",
     ],
 )
 
@@ -416,18 +469,23 @@ HWY_TESTS = [
     ("hwy/contrib/dot/", "dot_test"),
     ("hwy/contrib/image/", "image_test"),
     ("hwy/contrib/math/", "math_test"),
+    ("hwy/contrib/random/", "random_test"),
     ("hwy/contrib/matvec/", "matvec_test"),
     ("hwy/contrib/thread_pool/", "thread_pool_test"),
+    ("hwy/contrib/thread_pool/", "topology_test"),
     ("hwy/contrib/unroller/", "unroller_test"),
     # contrib/sort has its own BUILD, we also add sort_test to GUITAR_TESTS.
     # To run bench_sort, specify --test=hwy/contrib/sort:bench_sort.
     ("hwy/examples/", "skeleton_test"),
-    ("hwy/", "nanobenchmark_test"),
+    ("hwy/", "abort_test"),
     ("hwy/", "aligned_allocator_test"),
     ("hwy/", "base_test"),
+    ("hwy/", "bit_set_test"),
     ("hwy/", "highway_test"),
+    ("hwy/", "nanobenchmark_test"),
     ("hwy/", "targets_test"),
     ("hwy/tests/", "arithmetic_test"),
+    ("hwy/tests/", "bit_permute_test"),
     ("hwy/tests/", "blockwise_shift_test"),
     ("hwy/tests/", "blockwise_test"),
     ("hwy/tests/", "cast_test"),
@@ -438,24 +496,29 @@ HWY_TESTS = [
     ("hwy/tests/", "count_test"),
     ("hwy/tests/", "crypto_test"),
     ("hwy/tests/", "demote_test"),
+    ("hwy/tests/", "div_test"),
     ("hwy/tests/", "dup128_vec_test"),
     ("hwy/tests/", "expand_test"),
     ("hwy/tests/", "float_test"),
     ("hwy/tests/", "foreach_vec_test"),
     ("hwy/tests/", "if_test"),
+    ("hwy/tests/", "in_range_float_to_int_conv_test"),
     ("hwy/tests/", "interleaved_test"),
     ("hwy/tests/", "logical_test"),
     ("hwy/tests/", "mask_combine_test"),
     ("hwy/tests/", "mask_convert_test"),
     ("hwy/tests/", "mask_mem_test"),
+    ("hwy/tests/", "mask_slide_test"),
     ("hwy/tests/", "mask_test"),
     ("hwy/tests/", "masked_arithmetic_test"),
+    ("hwy/tests/", "masked_minmax_test"),
     ("hwy/tests/", "memory_test"),
     ("hwy/tests/", "minmax_test"),
     ("hwy/tests/", "mul_test"),
     ("hwy/tests/", "reduction_test"),
     ("hwy/tests/", "resize_test"),
     ("hwy/tests/", "reverse_test"),
+    ("hwy/tests/", "saturated_test"),
     ("hwy/tests/", "shift_test"),
     ("hwy/tests/", "shuffle4_test"),
     ("hwy/tests/", "slide_up_down_test"),
@@ -482,19 +545,24 @@ HWY_TEST_COPTS = select({
 HWY_TEST_DEPS = [
     ":algo",
     ":bit_pack",
+    ":bit_set",
     ":dot",
-    ":hwy",
     ":hwy_test_util",
+    ":hwy",
     ":image",
     ":math",
     ":matvec",
     ":nanobenchmark",
+    ":random",
     ":skeleton",
     ":thread_pool",
+    ":topology",
     ":unroller",
     "//hwy/contrib/sort:vqsort",
-    "@com_google_googletest//:gtest_main",
-]
+] + select({
+    ":compiler_msvc": [],
+    "//conditions:default": ["@com_google_googletest//:gtest_main"],
+})
 
 [
     [
@@ -506,6 +574,11 @@ HWY_TEST_DEPS = [
                 subdir + test + ".cc",
             ],
             copts = COPTS + HWY_TEST_COPTS,
+            # Fixes OOM for matvec_test on RVV.
+            exec_properties = select({
+                "@platforms//cpu:riscv64": {"mem": "16g"},
+                "//conditions:default": None,
+            }),
             features = select({
                 "@platforms//cpu:riscv64": ["fully_static_link"],
                 "//conditions:default": [],
@@ -515,7 +588,6 @@ HWY_TEST_DEPS = [
                     "-s ASSERTIONS=2",
                     "-s ENVIRONMENT=node,shell,web",
                     "-s ERROR_ON_UNDEFINED_SYMBOLS=1",
-                    "-s DEMANGLE_SUPPORT=1",
                     "-s EXIT_RUNTIME=1",
                     "-s ALLOW_MEMORY_GROWTH=1",
                     "--pre-js $(location :preamble.js.lds)",
@@ -527,6 +599,7 @@ HWY_TEST_DEPS = [
                 "//conditions:default": False,
             }),
             local_defines = ["HWY_IS_TEST"],
+            # Placeholder for malloc, do not remove
             # for test_suite.
             tags = ["hwy_ops_test"],
             deps = HWY_TEST_DEPS + select({

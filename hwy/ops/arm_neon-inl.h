@@ -1,5 +1,7 @@
 // Copyright 2019 Google LLC
+// Copyright 2024 Arm Limited and/or its affiliates <open-source-office@arm.com>
 // SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BSD-3-Clause
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,16 +23,12 @@
 
 #include "hwy/ops/shared-inl.h"
 
-HWY_BEFORE_NAMESPACE();
-
-// Must come after HWY_BEFORE_NAMESPACE so that the intrinsics are compiled with
-// the same target attribute as our code, see #834.
 HWY_DIAGNOSTICS(push)
 HWY_DIAGNOSTICS_OFF(disable : 4701, ignored "-Wuninitialized")
 #include <arm_neon.h>  // NOLINT(build/include_order)
 HWY_DIAGNOSTICS(pop)
 
-// Must come after arm_neon.h.
+HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
 
@@ -143,11 +141,27 @@ namespace detail {  // for code folding and Raw128
   HWY_NEON_DEF_FUNCTION(int64, 2, name, prefix##q, infix, s64, args) \
   HWY_NEON_DEF_FUNCTION(int64, 1, name, prefix, infix, s64, args)
 
-#if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) && \
-    (HWY_COMPILER_GCC_ACTUAL >= 1300 || HWY_COMPILER_CLANG >= 1100)
+// Clang 17 crashes with bf16, see github.com/llvm/llvm-project/issues/64179.
+#undef HWY_NEON_HAVE_BFLOAT16
+#if HWY_HAVE_SCALAR_BF16_TYPE &&                              \
+    ((HWY_TARGET == HWY_NEON_BF16 &&                          \
+      (!HWY_COMPILER_CLANG || HWY_COMPILER_CLANG >= 1800)) || \
+     defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC))
 #define HWY_NEON_HAVE_BFLOAT16 1
 #else
 #define HWY_NEON_HAVE_BFLOAT16 0
+#endif
+
+// HWY_NEON_HAVE_F32_TO_BF16C is defined if NEON vcvt_bf16_f32 and
+// vbfdot_f32 are available, even if the __bf16 type is disabled due to
+// GCC/Clang bugs.
+#undef HWY_NEON_HAVE_F32_TO_BF16C
+#if HWY_NEON_HAVE_BFLOAT16 || HWY_TARGET == HWY_NEON_BF16 || \
+    (defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) &&        \
+     (HWY_COMPILER_GCC_ACTUAL >= 1000 || HWY_COMPILER_CLANG >= 1100))
+#define HWY_NEON_HAVE_F32_TO_BF16C 1
+#else
+#define HWY_NEON_HAVE_F32_TO_BF16C 0
 #endif
 
 // bfloat16_t
@@ -185,7 +199,12 @@ namespace detail {  // for code folding and Raw128
 #elif HWY_HAVE_FLOAT16 && !HWY_NEON_HAVE_BFLOAT16
 #define HWY_NEON_IF_EMULATED_D(D) HWY_IF_BF16_D(D)
 #elif HWY_HAVE_FLOAT16 && HWY_NEON_HAVE_BFLOAT16
-#define HWY_NEON_IF_EMULATED_D(D) hwy::EnableIf<false>* = nullptr
+// NOTE: hwy::EnableIf<!hwy::IsSame<D, D>()>* = nullptr is used instead of
+// hwy::EnableIf<false>* = nullptr to avoid compiler errors since
+// !hwy::IsSame<D, D>() is always false and as !hwy::IsSame<D, D>() will cause
+// SFINAE to occur instead of a hard error due to a dependency on the D template
+// argument
+#define HWY_NEON_IF_EMULATED_D(D) hwy::EnableIf<!hwy::IsSame<D, D>()>* = nullptr
 #else
 #error "Logic error, handled all four cases"
 #endif
@@ -945,8 +964,12 @@ HWY_DIAGNOSTICS_OFF(disable : 4701, ignored "-Wmaybe-uninitialized")
 
 template <class D>
 HWY_API VFromD<D> Undefined(D /*tag*/) {
+#if HWY_HAS_BUILTIN(__builtin_nondeterministic_value)
+  return VFromD<D>{__builtin_nondeterministic_value(Zero(D()).raw)};
+#else
   VFromD<D> v;
   return v;
+#endif
 }
 
 HWY_DIAGNOSTICS(pop)
@@ -1292,9 +1315,6 @@ HWY_API VFromD<D> Iota(D d, const T2 first) {
 #endif
 }
 
-// ------------------------------ Tuple (VFromD)
-#include "hwy/ops/tuple-inl.h"
-
 // ------------------------------ Combine
 
 // Full result
@@ -1616,6 +1636,14 @@ namespace detail {
 #define HWY_NEON_BUILD_ARG_HWY_GET v.raw, kLane
 
 HWY_NEON_DEF_FUNCTION_ALL_TYPES(GetLane, vget, _lane_, HWY_GET)
+HWY_NEON_DEF_FUNCTION_BFLOAT_16(GetLane, vget, _lane_, HWY_GET)
+
+template <size_t kLane, class V, HWY_NEON_IF_EMULATED_D(DFromV<V>)>
+static HWY_INLINE HWY_MAYBE_UNUSED TFromV<V> GetLane(V v) {
+  const DFromV<decltype(v)> d;
+  const RebindToUnsigned<decltype(d)> du;
+  return BitCastScalar<TFromV<V>>(GetLane<kLane>(BitCast(du, v)));
+}
 
 #undef HWY_NEON_BUILD_TPL_HWY_GET
 #undef HWY_NEON_BUILD_RET_HWY_GET
@@ -1762,6 +1790,7 @@ namespace detail {
 #define HWY_NEON_BUILD_ARG_HWY_INSERT t, v.raw, kLane
 
 HWY_NEON_DEF_FUNCTION_ALL_TYPES(InsertLane, vset, _lane_, HWY_INSERT)
+HWY_NEON_DEF_FUNCTION_BFLOAT_16(InsertLane, vset, _lane_, HWY_INSERT)
 
 #undef HWY_NEON_BUILD_TPL_HWY_INSERT
 #undef HWY_NEON_BUILD_RET_HWY_INSERT
@@ -2133,12 +2162,16 @@ HWY_NEON_DEF_FUNCTION_INTS(ShiftRight, vshr, _n_, ignored)
 #pragma pop_macro("HWY_NEON_DEF_FUNCTION")
 
 // ------------------------------ RotateRight (ShiftRight, Or)
-template <int kBits, typename T, size_t N>
+template <int kBits, typename T, size_t N, HWY_IF_NOT_FLOAT_NOR_SPECIAL(T)>
 HWY_API Vec128<T, N> RotateRight(const Vec128<T, N> v) {
+  const DFromV<decltype(v)> d;
+  const RebindToUnsigned<decltype(d)> du;
+
   constexpr size_t kSizeInBits = sizeof(T) * 8;
   static_assert(0 <= kBits && kBits < kSizeInBits, "Invalid shift count");
   if (kBits == 0) return v;
-  return Or(ShiftRight<kBits>(v),
+
+  return Or(BitCast(d, ShiftRight<kBits>(BitCast(du, v))),
             ShiftLeft<HWY_MIN(kSizeInBits - 1, kSizeInBits - kBits)>(v));
 }
 
@@ -2328,7 +2361,39 @@ HWY_NEON_DEF_FUNCTION_ALL_FLOATS(operator*, vmul, _, 2)
 
 // ------------------------------ Integer multiplication
 
-// Returns the upper 16 bits of a * b in each lane.
+// Returns the upper sizeof(T)*8 bits of a * b in each lane.
+HWY_API Vec128<int8_t> MulHigh(Vec128<int8_t> a, Vec128<int8_t> b) {
+  int16x8_t rlo = vmull_s8(vget_low_s8(a.raw), vget_low_s8(b.raw));
+#if HWY_ARCH_ARM_A64
+  int16x8_t rhi = vmull_high_s8(a.raw, b.raw);
+#else
+  int16x8_t rhi = vmull_s8(vget_high_s8(a.raw), vget_high_s8(b.raw));
+#endif
+  return Vec128<int8_t>(
+      vuzp2q_s8(vreinterpretq_s8_s16(rlo), vreinterpretq_s8_s16(rhi)));
+}
+HWY_API Vec128<uint8_t> MulHigh(Vec128<uint8_t> a, Vec128<uint8_t> b) {
+  uint16x8_t rlo = vmull_u8(vget_low_u8(a.raw), vget_low_u8(b.raw));
+#if HWY_ARCH_ARM_A64
+  uint16x8_t rhi = vmull_high_u8(a.raw, b.raw);
+#else
+  uint16x8_t rhi = vmull_u8(vget_high_u8(a.raw), vget_high_u8(b.raw));
+#endif
+  return Vec128<uint8_t>(
+      vuzp2q_u8(vreinterpretq_u8_u16(rlo), vreinterpretq_u8_u16(rhi)));
+}
+
+template <size_t N, HWY_IF_V_SIZE_LE(int8_t, N, 8)>
+HWY_API Vec128<int8_t, N> MulHigh(Vec128<int8_t, N> a, Vec128<int8_t, N> b) {
+  int8x16_t hi_lo = vreinterpretq_s8_s16(vmull_s8(a.raw, b.raw));
+  return Vec128<int8_t, N>(vget_low_s8(vuzp2q_s8(hi_lo, hi_lo)));
+}
+template <size_t N, HWY_IF_V_SIZE_LE(uint8_t, N, 8)>
+HWY_API Vec128<uint8_t, N> MulHigh(Vec128<uint8_t, N> a, Vec128<uint8_t, N> b) {
+  uint8x16_t hi_lo = vreinterpretq_u8_u16(vmull_u8(a.raw, b.raw));
+  return Vec128<uint8_t, N>(vget_low_u8(vuzp2q_u8(hi_lo, hi_lo)));
+}
+
 HWY_API Vec128<int16_t> MulHigh(Vec128<int16_t> a, Vec128<int16_t> b) {
   int32x4_t rlo = vmull_s16(vget_low_s16(a.raw), vget_low_s16(b.raw));
 #if HWY_ARCH_ARM_A64
@@ -2360,6 +2425,57 @@ HWY_API Vec128<uint16_t, N> MulHigh(Vec128<uint16_t, N> a,
                                     Vec128<uint16_t, N> b) {
   uint16x8_t hi_lo = vreinterpretq_u16_u32(vmull_u16(a.raw, b.raw));
   return Vec128<uint16_t, N>(vget_low_u16(vuzp2q_u16(hi_lo, hi_lo)));
+}
+
+HWY_API Vec128<int32_t> MulHigh(Vec128<int32_t> a, Vec128<int32_t> b) {
+  int64x2_t rlo = vmull_s32(vget_low_s32(a.raw), vget_low_s32(b.raw));
+#if HWY_ARCH_ARM_A64
+  int64x2_t rhi = vmull_high_s32(a.raw, b.raw);
+#else
+  int64x2_t rhi = vmull_s32(vget_high_s32(a.raw), vget_high_s32(b.raw));
+#endif
+  return Vec128<int32_t>(
+      vuzp2q_s32(vreinterpretq_s32_s64(rlo), vreinterpretq_s32_s64(rhi)));
+}
+HWY_API Vec128<uint32_t> MulHigh(Vec128<uint32_t> a, Vec128<uint32_t> b) {
+  uint64x2_t rlo = vmull_u32(vget_low_u32(a.raw), vget_low_u32(b.raw));
+#if HWY_ARCH_ARM_A64
+  uint64x2_t rhi = vmull_high_u32(a.raw, b.raw);
+#else
+  uint64x2_t rhi = vmull_u32(vget_high_u32(a.raw), vget_high_u32(b.raw));
+#endif
+  return Vec128<uint32_t>(
+      vuzp2q_u32(vreinterpretq_u32_u64(rlo), vreinterpretq_u32_u64(rhi)));
+}
+
+template <size_t N, HWY_IF_V_SIZE_LE(int32_t, N, 8)>
+HWY_API Vec128<int32_t, N> MulHigh(Vec128<int32_t, N> a, Vec128<int32_t, N> b) {
+  int32x4_t hi_lo = vreinterpretq_s32_s64(vmull_s32(a.raw, b.raw));
+  return Vec128<int32_t, N>(vget_low_s32(vuzp2q_s32(hi_lo, hi_lo)));
+}
+template <size_t N, HWY_IF_V_SIZE_LE(uint32_t, N, 8)>
+HWY_API Vec128<uint32_t, N> MulHigh(Vec128<uint32_t, N> a,
+                                    Vec128<uint32_t, N> b) {
+  uint32x4_t hi_lo = vreinterpretq_u32_u64(vmull_u32(a.raw, b.raw));
+  return Vec128<uint32_t, N>(vget_low_u32(vuzp2q_u32(hi_lo, hi_lo)));
+}
+
+template <class T, HWY_IF_UI64(T)>
+HWY_API Vec128<T> MulHigh(Vec128<T> a, Vec128<T> b) {
+  T hi_0;
+  T hi_1;
+
+  Mul128(GetLane(a), GetLane(b), &hi_0);
+  Mul128(detail::GetLane<1>(a), detail::GetLane<1>(b), &hi_1);
+
+  return Dup128VecFromValues(Full128<T>(), hi_0, hi_1);
+}
+
+template <class T, HWY_IF_UI64(T)>
+HWY_API Vec64<T> MulHigh(Vec64<T> a, Vec64<T> b) {
+  T hi;
+  Mul128(GetLane(a), GetLane(b), &hi);
+  return Set(Full64<T>(), hi);
 }
 
 HWY_API Vec128<int16_t> MulFixedPoint15(Vec128<int16_t> a, Vec128<int16_t> b) {
@@ -2467,7 +2583,7 @@ HWY_API Vec128<T, N> NegMulAdd(Vec128<T, N> mul, Vec128<T, N> x,
 
 namespace detail {
 
-#if defined(__ARM_VFPV4__) || HWY_ARCH_ARM_A64
+#if HWY_NATIVE_FMA
 // Wrappers for changing argument order to what intrinsics expect.
 HWY_NEON_DEF_FUNCTION_ALL_FLOATS(MulAdd, vfma, _, 3)
 HWY_NEON_DEF_FUNCTION_ALL_FLOATS(NegMulAdd, vfms, _, 3)
@@ -2485,7 +2601,7 @@ HWY_API Vec128<float, N> NegMulAdd(Vec128<float, N> add, Vec128<float, N> mul,
   return add - mul * x;
 }
 
-#endif  // defined(__ARM_VFPV4__) || HWY_ARCH_ARM_A64
+#endif  // HWY_NATIVE_FMA
 }  // namespace detail
 
 template <typename T, size_t N, HWY_IF_FLOAT(T)>
@@ -2874,14 +2990,21 @@ HWY_API MFromD<DTo> RebindMask(DTo /* tag */, Mask128<TFrom, NFrom> m) {
 
 HWY_NEON_DEF_FUNCTION_ALL_TYPES(IfThenElse, vbsl, _, HWY_IF)
 
-template <class V, class D = DFromV<V>, HWY_NEON_IF_EMULATED_D(D)>
-HWY_API V IfThenElse(MFromD<D> mask, V yes, V no) {
+#if HWY_HAVE_FLOAT16
+#define HWY_NEON_IF_EMULATED_IF_THEN_ELSE(V) HWY_IF_BF16(TFromV<V>)
+#else
+#define HWY_NEON_IF_EMULATED_IF_THEN_ELSE(V) HWY_IF_SPECIAL_FLOAT_V(V)
+#endif
+
+template <class V, HWY_NEON_IF_EMULATED_IF_THEN_ELSE(V)>
+HWY_API V IfThenElse(MFromD<DFromV<V>> mask, V yes, V no) {
   const DFromV<decltype(yes)> d;
   const RebindToUnsigned<decltype(d)> du;
   return BitCast(
       d, IfThenElse(RebindMask(du, mask), BitCast(du, yes), BitCast(du, no)));
 }
 
+#undef HWY_NEON_IF_EMULATED_IF_THEN_ELSE
 #undef HWY_NEON_BUILD_TPL_HWY_IF
 #undef HWY_NEON_BUILD_RET_HWY_IF
 #undef HWY_NEON_BUILD_PARAM_HWY_IF
@@ -2920,12 +3043,6 @@ HWY_API Vec128<T, N> IfNegativeThenElse(Vec128<T, N> v, Vec128<T, N> yes,
 
   Mask128<T, N> m = MaskFromVec(BitCast(d, BroadcastSignBit(BitCast(di, v))));
   return IfThenElse(m, yes, no);
-}
-
-template <typename T, size_t N>
-HWY_API Vec128<T, N> ZeroIfNegative(Vec128<T, N> v) {
-  const auto zero = Zero(DFromV<decltype(v)>());
-  return Max(zero, v);
 }
 
 // ------------------------------ Mask logical
@@ -3894,16 +4011,15 @@ HWY_API Vec64<double> ConvertTo(D /* tag */, Vec64<int64_t> v) {
 
 template <class D, HWY_IF_F64_D(D)>
 HWY_API Vec128<double> ConvertTo(D /* tag */, Vec128<uint64_t> v) {
-  return Vec128<double>(vcvtq_f64_u64(ZeroIfNegative(v).raw));
+  return Vec128<double>(vcvtq_f64_u64(v.raw));
 }
 template <class D, HWY_IF_F64_D(D)>
 HWY_API Vec64<double> ConvertTo(D /* tag */, Vec64<uint64_t> v) {
   // GCC 6.5 and earlier are missing the 64-bit (non-q) intrinsic.
-  const auto non_neg_v = ZeroIfNegative(v);
 #if HWY_COMPILER_GCC_ACTUAL && HWY_COMPILER_GCC_ACTUAL < 700
-  return Set(Full64<double>(), static_cast<double>(GetLane(non_neg_v)));
+  return Set(Full64<double>(), static_cast<double>(GetLane(v)));
 #else
-  return Vec64<double>(vcvt_f64_u64(non_neg_v.raw));
+  return Vec64<double>(vcvt_f64_u64(v.raw));
 #endif  // HWY_COMPILER_GCC_ACTUAL && HWY_COMPILER_GCC_ACTUAL < 700
 }
 
@@ -4379,7 +4495,35 @@ HWY_API VFromD<D> PromoteTo(D du64, VFromD<Rebind<float, D>> v) {
             lo32_or_mask);
 }
 
+#ifdef HWY_NATIVE_F32_TO_UI64_PROMOTE_IN_RANGE_TO
+#undef HWY_NATIVE_F32_TO_UI64_PROMOTE_IN_RANGE_TO
+#else
+#define HWY_NATIVE_F32_TO_UI64_PROMOTE_IN_RANGE_TO
+#endif
+
+template <class D, HWY_IF_UI64_D(D)>
+HWY_API VFromD<D> PromoteInRangeTo(D d64, VFromD<Rebind<float, D>> v) {
+  const Rebind<MakeNarrow<TFromD<D>>, decltype(d64)> d32;
+  const RebindToFloat<decltype(d32)> df32;
+  const RebindToUnsigned<decltype(d32)> du32;
+  const Repartition<uint8_t, decltype(d32)> du32_as_du8;
+
+  constexpr uint32_t kExpAdjDecr =
+      0xFFFFFF9Du + static_cast<uint32_t>(!IsSigned<TFromD<D>>());
+
+  const auto exponent_adj = BitCast(
+      du32, SaturatedSub(BitCast(du32_as_du8, ShiftRight<23>(BitCast(du32, v))),
+                         BitCast(du32_as_du8, Set(du32, kExpAdjDecr))));
+  const auto adj_v =
+      BitCast(df32, BitCast(du32, v) - ShiftLeft<23>(exponent_adj));
+
+  return PromoteTo(d64, ConvertTo(d32, adj_v)) << PromoteTo(d64, exponent_adj);
+}
+
 #endif  // HWY_HAVE_FLOAT64
+
+// ------------------------------ PromoteEvenTo/PromoteOddTo
+#include "hwy/ops/inside-inl.h"
 
 // ------------------------------ PromoteUpperTo
 
@@ -4650,14 +4794,45 @@ HWY_API VFromD<D> DemoteTo(D /* tag */, VFromD<Rebind<float, D>> v) {
 
 #endif  // HWY_NEON_HAVE_F16C
 
-template <class D, HWY_IF_BF16_D(D)>
-HWY_API VFromD<D> DemoteTo(D dbf16, VFromD<Rebind<float, D>> v) {
-  const Rebind<int32_t, decltype(dbf16)> di32;
-  const Rebind<uint32_t, decltype(dbf16)> du32;  // for logical shift right
-  const Rebind<uint16_t, decltype(dbf16)> du16;
-  const auto bits_in_32 = BitCast(di32, ShiftRight<16>(BitCast(du32, v)));
-  return BitCast(dbf16, DemoteTo(du16, bits_in_32));
+#if HWY_NEON_HAVE_F32_TO_BF16C
+#ifdef HWY_NATIVE_DEMOTE_F32_TO_BF16
+#undef HWY_NATIVE_DEMOTE_F32_TO_BF16
+#else
+#define HWY_NATIVE_DEMOTE_F32_TO_BF16
+#endif
+
+namespace detail {
+#if HWY_NEON_HAVE_BFLOAT16
+// If HWY_NEON_HAVE_BFLOAT16 is true, detail::Vec128<bfloat16_t, N>::type is
+// bfloat16x4_t or bfloat16x8_t.
+static HWY_INLINE bfloat16x4_t BitCastFromRawNeonBF16(bfloat16x4_t raw) {
+  return raw;
 }
+#else
+// If HWY_NEON_HAVE_F32_TO_BF16C && !HWY_NEON_HAVE_BFLOAT16 is true,
+// detail::Vec128<bfloat16_t, N>::type is uint16x4_t or uint16x8_t vector to
+// work around compiler bugs that are there with GCC 13 or earlier or Clang 16
+// or earlier on AArch64.
+
+// The bfloat16x4_t vector returned by vcvt_bf16_f32 needs to be bitcasted to
+// an uint16x4_t vector if HWY_NEON_HAVE_F32_TO_BF16C &&
+// !HWY_NEON_HAVE_BFLOAT16 is true.
+static HWY_INLINE uint16x4_t BitCastFromRawNeonBF16(bfloat16x4_t raw) {
+  return vreinterpret_u16_bf16(raw);
+}
+#endif
+}  // namespace detail
+
+template <class D, HWY_IF_V_SIZE_D(D, 8), HWY_IF_BF16_D(D)>
+HWY_API VFromD<D> DemoteTo(D /*dbf16*/, VFromD<Rebind<float, D>> v) {
+  return VFromD<D>(detail::BitCastFromRawNeonBF16(vcvt_bf16_f32(v.raw)));
+}
+template <class D, HWY_IF_V_SIZE_LE_D(D, 4), HWY_IF_BF16_D(D)>
+HWY_API VFromD<D> DemoteTo(D /*dbf16*/, VFromD<Rebind<float, D>> v) {
+  return VFromD<D>(detail::BitCastFromRawNeonBF16(
+      vcvt_bf16_f32(vcombine_f32(v.raw, v.raw))));
+}
+#endif  // HWY_NEON_HAVE_F32_TO_BF16C
 
 #if HWY_HAVE_FLOAT64
 
@@ -4972,13 +5147,18 @@ HWY_API Vec64<float16_t> LowerHalf(Vec128<float16_t> v) {
   return Vec64<float16_t>(vget_low_f16(v.raw));
 }
 #endif  // HWY_HAVE_FLOAT16
+#if HWY_NEON_HAVE_BFLOAT16
+HWY_API Vec64<bfloat16_t> LowerHalf(Vec128<bfloat16_t> v) {
+  return Vec64<bfloat16_t>(vget_low_bf16(v.raw));
+}
+#endif  // HWY_NEON_HAVE_BFLOAT16
 #if HWY_HAVE_FLOAT64
 HWY_API Vec64<double> LowerHalf(Vec128<double> v) {
   return Vec64<double>(vget_low_f64(v.raw));
 }
 #endif  // HWY_HAVE_FLOAT64
 
-template <class V, HWY_IF_SPECIAL_FLOAT_V(V), HWY_IF_V_SIZE_V(V, 16)>
+template <class V, HWY_NEON_IF_EMULATED_D(DFromV<V>), HWY_IF_V_SIZE_V(V, 16)>
 HWY_API VFromD<Half<DFromV<V>>> LowerHalf(V v) {
   const Full128<uint16_t> du;
   const Half<DFromV<V>> dh;
@@ -5178,6 +5358,12 @@ HWY_API Vec64<float16_t> UpperHalf(D /* tag */, Vec128<float16_t> v) {
   return Vec64<float16_t>(vget_high_f16(v.raw));
 }
 #endif
+#if HWY_NEON_HAVE_BFLOAT16
+template <class D, HWY_IF_BF16_D(D)>
+HWY_API Vec64<bfloat16_t> UpperHalf(D /* tag */, Vec128<bfloat16_t> v) {
+  return Vec64<bfloat16_t>(vget_high_bf16(v.raw));
+}
+#endif  // HWY_NEON_HAVE_BFLOAT16
 template <class D, HWY_IF_F32_D(D)>
 HWY_API Vec64<float> UpperHalf(D /* tag */, Vec128<float> v) {
   return Vec64<float>(vget_high_f32(v.raw));
@@ -5309,6 +5495,20 @@ HWY_API Vec128<float16_t, N> Broadcast(Vec128<float16_t, N> v) {
 }
 #endif  // HWY_HAVE_FLOAT16
 
+#if HWY_NEON_HAVE_BFLOAT16
+template <int kLane>
+HWY_API Vec128<bfloat16_t> Broadcast(Vec128<bfloat16_t> v) {
+  static_assert(0 <= kLane && kLane < 8, "Invalid lane");
+  return Vec128<bfloat16_t>(vdupq_laneq_bf16(v.raw, kLane));
+}
+template <int kLane, size_t N, HWY_IF_V_SIZE_LE(bfloat16_t, N, 8),
+          HWY_IF_LANES_GT(N, 1)>
+HWY_API Vec128<bfloat16_t, N> Broadcast(Vec128<bfloat16_t, N> v) {
+  static_assert(0 <= kLane && kLane < N, "Invalid lane");
+  return Vec128<bfloat16_t, N>(vdup_lane_bf16(v.raw, kLane));
+}
+#endif  // HWY_NEON_HAVE_BFLOAT16
+
 template <int kLane>
 HWY_API Vec128<float> Broadcast(Vec128<float> v) {
   static_assert(0 <= kLane && kLane < 4, "Invalid lane");
@@ -5416,7 +5616,26 @@ HWY_API Vec128<float16_t> Broadcast(Vec128<float16_t> v) {
   static_assert(0 <= kLane && kLane < 8, "Invalid lane");
   return Vec128<float16_t>(vdupq_n_f16(vgetq_lane_f16(v.raw, kLane)));
 }
+template <int kLane, size_t N, HWY_IF_V_SIZE_LE(float16_t, N, 8),
+          HWY_IF_LANES_GT(N, 1)>
+HWY_API Vec128<float16_t, N> Broadcast(Vec128<float16_t, N> v) {
+  static_assert(0 <= kLane && kLane < N, "Invalid lane");
+  return Vec128<float16_t, N>(vdup_lane_f16(v.raw, kLane));
+}
 #endif  // HWY_HAVE_FLOAT16
+#if HWY_NEON_HAVE_BFLOAT16
+template <int kLane>
+HWY_API Vec128<bfloat16_t> Broadcast(Vec128<bfloat16_t> v) {
+  static_assert(0 <= kLane && kLane < 8, "Invalid lane");
+  return Vec128<bfloat16_t>(vdupq_n_bf16(vgetq_lane_bf16(v.raw, kLane)));
+}
+template <int kLane, size_t N, HWY_IF_V_SIZE_LE(bfloat16_t, N, 8),
+          HWY_IF_LANES_GT(N, 1)>
+HWY_API Vec128<bfloat16_t, N> Broadcast(Vec128<bfloat16_t, N> v) {
+  static_assert(0 <= kLane && kLane < N, "Invalid lane");
+  return Vec128<bfloat16_t, N>(vdup_lane_bf16(v.raw, kLane));
+}
+#endif  // HWY_NEON_HAVE_BFLOAT16
 template <int kLane>
 HWY_API Vec128<float> Broadcast(Vec128<float> v) {
   static_assert(0 <= kLane && kLane < 4, "Invalid lane");
@@ -5430,6 +5649,14 @@ HWY_API Vec128<float, N> Broadcast(Vec128<float, N> v) {
 }
 
 #endif  // HWY_ARCH_ARM_A64
+
+template <int kLane, typename V, HWY_NEON_IF_EMULATED_D(DFromV<V>),
+          HWY_IF_LANES_GT_D(DFromV<V>, 1)>
+HWY_API V Broadcast(V v) {
+  const DFromV<V> d;
+  const RebindToUnsigned<decltype(d)> du;
+  return BitCast(d, Broadcast<kLane>(BitCast(du, v)));
+}
 
 // ------------------------------ TableLookupLanes
 
@@ -6268,16 +6495,514 @@ HWY_API VFromD<D> SlideDownLanes(D d, VFromD<D> v, size_t amt) {
   return detail::SlideDownLanes(v, amt);
 }
 
+// ------------------------------- WidenHighMulAdd
+
+#ifdef HWY_NATIVE_WIDEN_HIGH_MUL_ADD
+#undef HWY_NATIVE_WIDEN_HIGH_MUL_ADD
+#else
+#define HWY_NATIVE_WIDEN_HIGH_MUL_ADD
+#endif
+
+namespace detail {
+
+template<class D, HWY_IF_U64_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_GT_D(DN, 2)>
+HWY_API VFromD<D> WidenHighMulAdd(D /* tag */, VFromD<DN> mul,
+                                   VFromD<DN> x, VFromD<D> add) {
+#if HWY_ARCH_ARM_A64
+  return Vec128<uint64_t>(vmlal_high_u32(add.raw, mul.raw, x.raw));
+#else
+  const Full64<uint32_t> dh;
+  return Vec128<uint64_t>(
+      vmlal_u32(add.raw, UpperHalf(dh, mul).raw, UpperHalf(dh, x).raw));
+#endif
+}
+
+template<class D, HWY_IF_U64_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_LE_D(DN, 2)>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  Vec128<uint64_t> mulResult = Vec128<uint64_t>(vmull_u32(mul.raw, x.raw));
+  return UpperHalf(d, mulResult) + add;
+}
+
+template<class D, HWY_IF_I64_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_GT_D(DN, 2)>
+HWY_API VFromD<D> WidenHighMulAdd(D /* tag */, VFromD<DN> mul,
+                                   VFromD<DN> x, VFromD<D> add) {
+#if HWY_ARCH_ARM_A64
+  return Vec128<int64_t>(vmlal_high_s32(add.raw, mul.raw, x.raw));
+#else
+  const Full64<int32_t> dh;
+  return Vec128<int64_t>(
+      vmlal_s32(add.raw, UpperHalf(dh, mul).raw, UpperHalf(dh, x).raw));
+#endif
+}
+
+template<class D, HWY_IF_I64_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_LE_D(DN, 2)>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  Vec128<int64_t> mulResult = Vec128<int64_t>(vmull_s32(mul.raw, x.raw));
+  return UpperHalf(d, mulResult) + add;
+}
+
+template<class D, HWY_IF_I32_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_GT_D(DN, 4)>
+HWY_API VFromD<D> WidenHighMulAdd(D /* tag */, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+#if HWY_ARCH_ARM_A64
+  return Vec128<int32_t>(vmlal_high_s16(add.raw, mul.raw, x.raw));
+#else
+  const Full64<int16_t> dh;
+  return Vec128<int32_t>(
+      vmlal_s16(add.raw, UpperHalf(dh, mul).raw, UpperHalf(dh, x).raw));
+#endif
+}
+
+template<class D, HWY_IF_I32_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_D(DN, 4)>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  Vec128<int32_t> widen = Vec128<int32_t>(vmull_s16(mul.raw, x.raw));
+  Vec64<int32_t> hi = UpperHalf(d, widen);
+  return hi + add;
+}
+
+template<class D, HWY_IF_I32_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_D(DN, 2)>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  Vec128<int32_t> widen = Vec128<int32_t>(vmull_s16(mul.raw, x.raw));
+  Vec32<int32_t> hi = UpperHalf(d, Vec64<int32_t>(vget_high_s32(widen.raw)));
+  return hi + add;
+}
+
+template<class D, HWY_IF_U32_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_GT_D(DN, 4)>
+HWY_API VFromD<D> WidenHighMulAdd(D /* tag */, VFromD<DN> mul,
+                                   VFromD<DN> x, VFromD<D> add) {
+#if HWY_ARCH_ARM_A64
+  return Vec128<uint32_t>(vmlal_high_u16(add.raw, mul.raw, x.raw));
+#else
+  const Full64<uint16_t> dh;
+  return Vec128<uint32_t>(
+      vmlal_u16(add.raw, UpperHalf(dh, mul).raw, UpperHalf(dh, x).raw));
+#endif
+}
+
+template<class D, HWY_IF_U32_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_D(DN, 4)>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                   VFromD<DN> x, VFromD<D> add) {
+  Vec128<uint32_t> widen = Vec128<uint32_t>(vmull_u16(mul.raw, x.raw));
+  VFromD<D> hi = UpperHalf(d, widen);
+  return hi + add;
+}
+
+template<class D, HWY_IF_U32_D(D), HWY_IF_LANES_D(D, 1),
+         class DN = RepartitionToNarrow<D>>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  Vec128<uint32_t> widen = Vec128<uint32_t>(vmull_u16(mul.raw, x.raw));
+  VFromD<D> hi = UpperHalf(d, Vec64<uint32_t>(vget_high_u32(widen.raw)));
+  return hi + add;
+}
+
+template<class D, HWY_IF_U16_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_GT_D(DN, 8)>
+HWY_API VFromD<D> WidenHighMulAdd(D /* tag */, VFromD<DN> mul,
+                                   VFromD<DN> x, VFromD<D> add) {
+#if HWY_ARCH_ARM_A64
+  return Vec128<uint16_t>(vmlal_high_u8(add.raw, mul.raw, x.raw));
+#else
+  const Full64<uint8_t> dh;
+  return Vec128<uint16_t>(
+      vmlal_u8(add.raw, UpperHalf(dh, mul).raw, UpperHalf(dh, x).raw));
+#endif
+}
+
+template<class D, HWY_IF_U16_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_D(DN, 8)>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  Vec128<uint16_t> widen = Vec128<uint16_t>(vmull_u8(mul.raw, x.raw));
+  VFromD<D> hi = UpperHalf(d, widen);
+  return hi + add;
+}
+
+template<class D, HWY_IF_U16(TFromD<D>), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_LE_D(DN, 4)>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  Vec128<uint16_t> widen = Vec128<uint16_t>(vmull_u8(mul.raw, x.raw));
+  const Twice<decltype(d)> d16F;
+  VFromD<D> hi = UpperHalf(d, VFromD<decltype(d16F)>(vget_high_u16(widen.raw)));
+  return hi + add;
+}
+
+template<class D, HWY_IF_I16_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_GT_D(DN, 8)>
+HWY_API VFromD<D> WidenHighMulAdd(D /* tag */, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+#if HWY_ARCH_ARM_A64
+  return Vec128<int16_t>(vmlal_high_s8(add.raw, mul.raw, x.raw));
+#else
+  const Full64<int8_t> dh;
+  return Vec128<int16_t>(
+      vmlal_s8(add.raw, UpperHalf(dh, mul).raw, UpperHalf(dh, x).raw));
+#endif
+}
+
+template<class D, HWY_IF_I16_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_D(DN, 8)>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  Vec128<int16_t> widen = Vec128<int16_t>(vmull_s8(mul.raw, x.raw));
+  VFromD<D> hi = UpperHalf(d, widen);
+  return hi + add;
+}
+
+template<class D, HWY_IF_I16_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_LE_D(DN, 4)>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  Vec128<int16_t> widen = Vec128<int16_t>(vmull_s8(mul.raw, x.raw));
+  const Twice<decltype(d)> d16F;
+  VFromD<D> hi = UpperHalf(d, VFromD<decltype(d16F)>(vget_high_s16(widen.raw)));
+  return hi + add;
+}
+
+#if 0
+#if HWY_HAVE_FLOAT16
+template<class D, HWY_IF_F32_D(D), HWY_IF_LANES_D(D, 4),
+         class DN = RepartitionToNarrow<D>>
+HWY_API VFromD<D> WidenHighMulAdd(D /* tag */, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  return VFromD<D>(vfmlalq_high_f16(add.raw, mul.raw, x.raw));
+}
+
+template<class D, HWY_IF_F32_D(D), HWY_IF_LANES_D(D, 2),
+         class DN = RepartitionToNarrow<D>>
+HWY_API VFromD<D> WidenHighMulAdd(D /* tag */, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  return Vec64<float32_t>(vfmlal_high_f16(add.raw, mul.raw, x.raw));
+}
+
+template<class D, HWY_IF_F32_D(D), HWY_IF_LANES_D(D, 1),
+         class DN = RepartitionToNarrow<D>>
+HWY_API VFromD<D> WidenHighMulAdd(D d, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  return MulAdd(add, PromoteUpperTo(d, mul), PromoteUpperTo(d, x));
+}
+#endif
+#endif
+
+}  // namespace detail
+
+// ------------------------------- WidenMulAdd
+
+#ifdef HWY_NATIVE_WIDEN_MUL_ADD
+#undef HWY_NATIVE_WIDEN_MUL_ADD
+#else
+#define HWY_NATIVE_WIDEN_MUL_ADD
+#endif
+
+namespace detail {
+
+template<class D, HWY_IF_U16_D(D), HWY_IF_LANES_GT_D(D, 4),
+         class DN = Rebind<MakeNarrow<TFromD<D>>, D>>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                              VFromD<DN> x, VFromD<D> add) {
+  return Vec128<uint16_t>(vmlal_u8(add.raw, mul.raw, x.raw));
+}
+
+template <class D, HWY_IF_U16_D(D), HWY_IF_LANES_LE_D(D, 4),
+          class DN = Rebind<MakeNarrow<TFromD<D>>, D>>
+HWY_API VFromD<D> WidenMulAdd(D d, VFromD<DN> mul, VFromD<DN> x,
+                              VFromD<D> add) {
+  return MulAdd(add, PromoteTo(d, mul), PromoteTo(d, x));
+}
+
+template<class D, HWY_IF_I16_D(D), HWY_IF_LANES_GT_D(D, 4),
+         class DN = Rebind<MakeNarrow<TFromD<D>>, D>>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                              VFromD<DN> x, VFromD<D> add) {
+  return VFromD<D>(vmlal_s8(add.raw, mul.raw, x.raw));
+}
+
+template <class D, HWY_IF_I16_D(D), HWY_IF_LANES_LE_D(D, 4),
+          class DN = Rebind<MakeNarrow<TFromD<D>>, D>>
+HWY_API VFromD<D> WidenMulAdd(D d, VFromD<DN> mul, VFromD<DN> x,
+                              VFromD<D> add) {
+  return MulAdd(add, PromoteTo(d, mul), PromoteTo(d, x));
+}
+
+template<class D, HWY_IF_I32_D(D),
+         class DN = Rebind<MakeNarrow<TFromD<D>>, D>,
+         HWY_IF_LANES_GT_D(DN, 2)>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                              VFromD<DN> x, VFromD<D> add) {
+  return Vec128<int32_t>(vmlal_s16(add.raw, mul.raw, x.raw));
+}
+
+template<class D, HWY_IF_I32_D(D),
+         class DN = Rebind<MakeNarrow<TFromD<D>>, D>,
+         HWY_IF_LANES_D(DN, 2)>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                              VFromD<DN> x, VFromD<D> add) {
+  Vec128<int32_t> mulRs = Vec128<int32_t>(vmull_s16(mul.raw, x.raw));
+  const VFromD<D> mul10 = LowerHalf(mulRs);
+  return add + mul10;
+}
+
+template<class D, HWY_IF_I32_D(D),
+         class DN = Rebind<MakeNarrow<TFromD<D>>, D>,
+         HWY_IF_LANES_D(D, 1)>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                               VFromD<DN> x, VFromD<D> add) {
+  Vec64<int32_t> mulRs = LowerHalf(Vec128<int32_t>(vmull_s16(mul.raw, x.raw)));
+  const Vec32<int32_t> mul10(LowerHalf(mulRs));
+  return add + mul10;
+}
+
+template<class D, HWY_IF_U32_D(D), HWY_IF_LANES_GT_D(D, 2),
+         class DN = Rebind<MakeNarrow<TFromD<D>>, D>>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                              VFromD<DN> x, VFromD<D> add) {
+  return Vec128<uint32_t>(vmlal_u16(add.raw, mul.raw, x.raw));
+}
+
+template<class D, HWY_IF_U32_D(D), HWY_IF_LANES_D(D, 2),
+         class DN = Rebind<MakeNarrow<TFromD<D>>, D>>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                              VFromD<DN> x, VFromD<D> add) {
+  Vec128<uint32_t> mulRs = Vec128<uint32_t>(vmull_u16(mul.raw, x.raw));
+  const Vec64<uint32_t> mul10(LowerHalf(mulRs));
+  return add + mul10;
+}
+
+template<class D, HWY_IF_U32_D(D), HWY_IF_LANES_D(D, 1),
+         class DN = Rebind<MakeNarrow<TFromD<D>>, D>>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                              VFromD<DN> x, VFromD<D> add) {
+  Vec64<uint32_t> mulRs =
+      LowerHalf(Vec128<uint32_t>(vmull_u16(mul.raw, x.raw)));
+  const Vec32<uint32_t> mul10(LowerHalf(mulRs));
+  return add + mul10;
+}
+
+template<class D, HWY_IF_I64_D(D), class DN = Rebind<MakeNarrow<TFromD<D>>, D>,
+         HWY_IF_LANES_D(DN, 2)>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                               VFromD<DN> x, VFromD<D> add) {
+  return VFromD<D>(vmlal_s32(add.raw, mul.raw, x.raw));
+}
+
+template<class D, HWY_IF_I64_D(D), HWY_IF_LANES_D(D, 1),
+         class DN = Rebind<MakeNarrow<TFromD<D>>, D>>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                              VFromD<DN> x, VFromD<D> add) {
+  Vec128<int64_t> mulRs = Vec128<int64_t>(vmull_s32(mul.raw, x.raw));
+  const VFromD<D> mul10(LowerHalf(mulRs));
+  return add + mul10;
+}
+
+template<class D, HWY_IF_U64_D(D), class DN = Rebind<MakeNarrow<TFromD<D>>, D>,
+         HWY_IF_LANES_D(DN, 2)>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                              VFromD<DN> x, VFromD<D> add) {
+  return VFromD<D>(vmlal_u32(add.raw, mul.raw, x.raw));
+}
+
+template<class D, HWY_IF_U64_D(D), class DN = Rebind<MakeNarrow<TFromD<D>>, D>,
+         HWY_IF_LANES_D(DN, 1)>
+HWY_API VFromD<D> WidenMulAdd(D /* tag */, VFromD<DN> mul,
+                              VFromD<DN> x, VFromD<D> add) {
+  Vec128<uint64_t> mulRs = Vec128<uint64_t>(vmull_u32(mul.raw, x.raw));
+  const VFromD<D> mul10(LowerHalf(mulRs));
+  return add + mul10;
+}
+
+#if 0
+#if HWY_HAVE_FLOAT16
+template<class D, HWY_IF_F32_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_D(D, 4)>
+HWY_API VFromD<D> WidenLowMulAdd(D /* tag */, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  return VFromD<D>(vfmlalq_low_f16(add.raw, mul.raw, x.raw));
+}
+
+template<class D, HWY_IF_F32_D(D), class DN = RepartitionToNarrow<D>,
+         HWY_IF_LANES_D(DN, 4)>
+HWY_API VFromD<D> WidenLowMulAdd(D /* tag */, VFromD<DN> mul,
+                                  VFromD<DN> x, VFromD<D> add) {
+  return Vec64<float32_t>(vfmlal_low_f16(add.raw, mul.raw, x.raw));
+}
+
+template<class D, HWY_IF_F32_D(D), HWY_IF_LANES_D(D, 1),
+         class DN = RepartitionToNarrow<D>>
+HWY_API VFromD<D> WidenLowMulAdd(D d, VFromD<DN> mul,
+                                 VFromD<DN> x, VFromD<D> add) {
+  return MulAdd(add, PromoteLowerTo(d, mul), PromoteLowerTo(d, x));
+}
+#endif
+#endif
+
+}  // namespace detail
+
+// ------------------------------ WidenMulAccumulate
+
+#ifdef HWY_NATIVE_WIDEN_MUL_ACCUMULATE
+#undef HWY_NATIVE_WIDEN_MUL_ACCUMULATE
+#else
+#define HWY_NATIVE_WIDEN_MUL_ACCUMULATE
+#endif
+
+template<class D, HWY_IF_INTEGER(TFromD<D>), class DN = RepartitionToNarrow<D>>
+HWY_API VFromD<D> WidenMulAccumulate(D d, VFromD<DN> mul, VFromD<DN> x,
+                                     VFromD<D> low, VFromD<D>& high) {
+  high = detail::WidenHighMulAdd(d, mul, x, high);
+  return detail::WidenMulAdd(d, LowerHalf(mul), LowerHalf(x), low);
+}
+
+#if 0
+#ifdef HWY_NATIVE_WIDEN_MUL_ACCUMULATE_F16
+#undef HWY_NATIVE_WIDEN_MUL_ACCUMULATE_F16
+#else
+#define HWY_NATIVE_WIDEN_MUL_ACCUMULATE_F16
+#endif
+
+#if HWY_HAVE_FLOAT16
+
+template<class D, HWY_IF_F32_D(D), class DN = RepartitionToNarrow<D>>
+HWY_API VFromD<D> WidenMulAccumulate(D d, VFromD<DN> mul, VFromD<DN> x,
+                                     VFromD<D> low, VFromD<D>& high) {
+  high = detail::WidenHighMulAdd(d, mul, x, high);
+  return detail::WidenLowMulAdd(d, mul, x, low);
+}
+
+#endif
+#endif
+
+// ------------------------------ SatWidenMulAccumFixedPoint
+
+#ifdef HWY_NATIVE_I16_SATWIDENMULACCUMFIXEDPOINT
+#undef HWY_NATIVE_I16_SATWIDENMULACCUMFIXEDPOINT
+#else
+#define HWY_NATIVE_I16_SATWIDENMULACCUMFIXEDPOINT
+#endif
+
+template <class DI32, HWY_IF_I32_D(DI32), HWY_IF_V_SIZE_D(DI32, 16)>
+HWY_API VFromD<DI32> SatWidenMulAccumFixedPoint(DI32 /*di32*/,
+                                                VFromD<Rebind<int16_t, DI32>> a,
+                                                VFromD<Rebind<int16_t, DI32>> b,
+                                                VFromD<DI32> sum) {
+  return VFromD<DI32>(vqdmlal_s16(sum.raw, a.raw, b.raw));
+}
+
+template <class DI32, HWY_IF_I32_D(DI32), HWY_IF_V_SIZE_LE_D(DI32, 8)>
+HWY_API VFromD<DI32> SatWidenMulAccumFixedPoint(DI32 di32,
+                                                VFromD<Rebind<int16_t, DI32>> a,
+                                                VFromD<Rebind<int16_t, DI32>> b,
+                                                VFromD<DI32> sum) {
+  const Full128<TFromD<DI32>> di32_full;
+  const Rebind<int16_t, decltype(di32_full)> di16_full64;
+  return ResizeBitCast(
+      di32, SatWidenMulAccumFixedPoint(di32_full, ResizeBitCast(di16_full64, a),
+                                       ResizeBitCast(di16_full64, b),
+                                       ResizeBitCast(di32_full, sum)));
+}
+
 // ------------------------------ ReorderWidenMulAccumulate (MulAdd, ZipLower)
 
+#if HWY_NEON_HAVE_F32_TO_BF16C
+
+#ifdef HWY_NATIVE_MUL_EVEN_BF16
+#undef HWY_NATIVE_MUL_EVEN_BF16
+#else
+#define HWY_NATIVE_MUL_EVEN_BF16
+#endif
+
+#ifdef HWY_NATIVE_REORDER_WIDEN_MUL_ACC_BF16
+#undef HWY_NATIVE_REORDER_WIDEN_MUL_ACC_BF16
+#else
+#define HWY_NATIVE_REORDER_WIDEN_MUL_ACC_BF16
+#endif
+
+namespace detail {
 #if HWY_NEON_HAVE_BFLOAT16
+// If HWY_NEON_HAVE_BFLOAT16 is true, detail::Vec128<bfloat16_t, N>::type is
+// bfloat16x4_t or bfloat16x8_t.
+static HWY_INLINE bfloat16x4_t BitCastToRawNeonBF16(bfloat16x4_t raw) {
+  return raw;
+}
+static HWY_INLINE bfloat16x8_t BitCastToRawNeonBF16(bfloat16x8_t raw) {
+  return raw;
+}
+#else
+// If HWY_NEON_HAVE_F32_TO_BF16C && !HWY_NEON_HAVE_BFLOAT16 is true,
+// detail::Vec128<bfloat16_t, N>::type is uint16x4_t or uint16x8_t vector to
+// work around compiler bugs that are there with GCC 13 or earlier or Clang 16
+// or earlier on AArch64.
+
+// The uint16x4_t or uint16x8_t vector neets to be bitcasted to a bfloat16x4_t
+// or a bfloat16x8_t vector for the vbfdot_f32 and vbfdotq_f32 intrinsics if
+// HWY_NEON_HAVE_F32_TO_BF16C && !HWY_NEON_HAVE_BFLOAT16 is true
+static HWY_INLINE bfloat16x4_t BitCastToRawNeonBF16(uint16x4_t raw) {
+  return vreinterpret_bf16_u16(raw);
+}
+static HWY_INLINE bfloat16x8_t BitCastToRawNeonBF16(uint16x8_t raw) {
+  return vreinterpretq_bf16_u16(raw);
+}
+#endif
+}  // namespace detail
+
+template <class D, HWY_IF_V_SIZE_D(D, 16)>
+HWY_API Vec128<float> MulEvenAdd(D /*d32*/, Vec128<bfloat16_t> a,
+                                 Vec128<bfloat16_t> b, const Vec128<float> c) {
+  return Vec128<float>(vbfmlalbq_f32(c.raw, detail::BitCastToRawNeonBF16(a.raw),
+                                   detail::BitCastToRawNeonBF16(b.raw)));
+}
+
+template <class D, HWY_IF_V_SIZE_D(D, 16)>
+HWY_API Vec128<float> MulOddAdd(D /*d32*/, Vec128<bfloat16_t> a,
+                                 Vec128<bfloat16_t> b, const Vec128<float> c) {
+  return Vec128<float>(vbfmlaltq_f32(c.raw, detail::BitCastToRawNeonBF16(a.raw),
+                                   detail::BitCastToRawNeonBF16(b.raw)));
+}
 
 template <class D, HWY_IF_V_SIZE_D(D, 16)>
 HWY_API Vec128<float> ReorderWidenMulAccumulate(D /*d32*/, Vec128<bfloat16_t> a,
                                                 Vec128<bfloat16_t> b,
                                                 const Vec128<float> sum0,
                                                 Vec128<float>& /*sum1*/) {
-  return Vec128<float>(vbfdotq_f32(sum0.raw, a.raw, b.raw));
+  return Vec128<float>(vbfdotq_f32(sum0.raw,
+                                   detail::BitCastToRawNeonBF16(a.raw),
+                                   detail::BitCastToRawNeonBF16(b.raw)));
+}
+
+// There is no non-q version of these instructions.
+template <class D, HWY_IF_V_SIZE_LE_D(D, 8)>
+HWY_API VFromD<D> MulEvenAdd(D d32, VFromD<Repartition<bfloat16_t, D>> a,
+                             VFromD<Repartition<bfloat16_t, D>> b,
+                             const VFromD<D> c) {
+  const Full128<float> d32f;
+  const Full128<bfloat16_t> d16f;
+  return ResizeBitCast(
+      d32, MulEvenAdd(d32f, ResizeBitCast(d16f, a), ResizeBitCast(d16f, b),
+                      ResizeBitCast(d32f, c)));
+}
+
+template <class D, HWY_IF_V_SIZE_LE_D(D, 8)>
+HWY_API VFromD<D> MulOddAdd(D d32, VFromD<Repartition<bfloat16_t, D>> a,
+                            VFromD<Repartition<bfloat16_t, D>> b,
+                            const VFromD<D> c) {
+  const Full128<float> d32f;
+  const Full128<bfloat16_t> d16f;
+  return ResizeBitCast(
+      d32, MulOddAdd(d32f, ResizeBitCast(d16f, a), ResizeBitCast(d16f, b),
+                     ResizeBitCast(d32f, c)));
 }
 
 template <class D, HWY_IF_V_SIZE_LE_D(D, 8)>
@@ -6285,28 +7010,11 @@ HWY_API VFromD<D> ReorderWidenMulAccumulate(
     D /*d32*/, VFromD<Repartition<bfloat16_t, D>> a,
     VFromD<Repartition<bfloat16_t, D>> b, const VFromD<D> sum0,
     VFromD<D>& /*sum1*/) {
-  return VFromD<D>(vbfdot_f32(sum0.raw, a.raw, b.raw));
+  return VFromD<D>(vbfdot_f32(sum0.raw, detail::BitCastToRawNeonBF16(a.raw),
+                              detail::BitCastToRawNeonBF16(b.raw)));
 }
 
-#else
-
-template <class D32, HWY_IF_F32_D(D32),
-          class V16 = VFromD<Repartition<bfloat16_t, D32>>>
-HWY_API VFromD<D32> ReorderWidenMulAccumulate(D32 df32, V16 a, V16 b,
-                                              const VFromD<D32> sum0,
-                                              VFromD<D32>& sum1) {
-  const RebindToUnsigned<decltype(df32)> du32;
-  using VU32 = VFromD<decltype(du32)>;
-  const VU32 odd = Set(du32, 0xFFFF0000u);
-  const VU32 ae = ShiftLeft<16>(BitCast(du32, a));
-  const VU32 ao = And(BitCast(du32, a), odd);
-  const VU32 be = ShiftLeft<16>(BitCast(du32, b));
-  const VU32 bo = And(BitCast(du32, b), odd);
-  sum1 = MulAdd(BitCast(df32, ao), BitCast(df32, bo), sum1);
-  return MulAdd(BitCast(df32, ae), BitCast(df32, be), sum0);
-}
-
-#endif  // HWY_NEON_HAVE_BFLOAT16
+#endif  // HWY_NEON_HAVE_F32_TO_BF16C
 
 template <class D, HWY_IF_I32_D(D)>
 HWY_API Vec128<int32_t> ReorderWidenMulAccumulate(D /*d32*/, Vec128<int16_t> a,
@@ -6476,37 +7184,34 @@ HWY_API Vec32<uint32_t> RearrangeToOddPlusEven(Vec32<uint32_t> sum0,
 
 // ------------------------------ WidenMulPairwiseAdd
 
-#if HWY_NEON_HAVE_BFLOAT16
+#if HWY_NEON_HAVE_F32_TO_BF16C
 
-template <class D, HWY_IF_V_SIZE_D(D, 16)>
-HWY_API Vec128<float> WidenMulPairwiseAdd(D d32, Vec128<bfloat16_t> a,
+template <class DF, HWY_IF_V_SIZE_D(DF, 16)>
+HWY_API Vec128<float> WidenMulPairwiseAdd(DF df, Vec128<bfloat16_t> a,
                                           Vec128<bfloat16_t> b) {
-  return Vec128<float>(vbfdotq_f32(Zero(d32).raw, a.raw, b.raw));
+  return Vec128<float>(vbfdotq_f32(Zero(df).raw,
+                                   detail::BitCastToRawNeonBF16(a.raw),
+                                   detail::BitCastToRawNeonBF16(b.raw)));
 }
 
-template <class D, HWY_IF_V_SIZE_LE_D(D, 8)>
-HWY_API VFromD<D> WidenMulPairwiseAdd(D d32,
-                                      VFromD<Repartition<bfloat16_t, D>> a,
-                                      VFromD<Repartition<bfloat16_t, D>> b) {
-  return VFromD<D>(vbfdot_f32(Zero(d32).raw, a.raw, b.raw));
+template <class DF, HWY_IF_V_SIZE_LE_D(DF, 8)>
+HWY_API VFromD<DF> WidenMulPairwiseAdd(DF df,
+                                       VFromD<Repartition<bfloat16_t, DF>> a,
+                                       VFromD<Repartition<bfloat16_t, DF>> b) {
+  return VFromD<DF>(vbfdot_f32(Zero(df).raw,
+                               detail::BitCastToRawNeonBF16(a.raw),
+                               detail::BitCastToRawNeonBF16(b.raw)));
 }
 
 #else
-template <class D32, HWY_IF_F32_D(D32)>
-HWY_API VFromD<D32> WidenMulPairwiseAdd(
-    D32 df32, VFromD<Repartition<bfloat16_t, D32>> a,
-    VFromD<Repartition<bfloat16_t, D32>> b) {
-  const RebindToUnsigned<decltype(df32)> du32;
-  using VU32 = VFromD<decltype(du32)>;
-  const VU32 odd = Set(du32, 0xFFFF0000u);
-  const VU32 ae = ShiftLeft<16>(BitCast(du32, a));
-  const VU32 ao = And(BitCast(du32, a), odd);
-  const VU32 be = ShiftLeft<16>(BitCast(du32, b));
-  const VU32 bo = And(BitCast(du32, b), odd);
-  return MulAdd(BitCast(df32, ae), BitCast(df32, be),
-                Mul(BitCast(df32, ao), BitCast(df32, bo)));
+template <class DF, HWY_IF_F32_D(DF)>
+HWY_API VFromD<DF> WidenMulPairwiseAdd(DF df,
+                                       VFromD<Repartition<bfloat16_t, DF>> a,
+                                       VFromD<Repartition<bfloat16_t, DF>> b) {
+  return MulAdd(PromoteEvenTo(df, a), PromoteEvenTo(df, b),
+                Mul(PromoteOddTo(df, a), PromoteOddTo(df, b)));
 }
-#endif  // HWY_NEON_HAVE_BFLOAT16
+#endif  // HWY_NEON_HAVE_F32_TO_BF16C
 
 template <class D, HWY_IF_I32_D(D)>
 HWY_API Vec128<int32_t> WidenMulPairwiseAdd(D /*d32*/, Vec128<int16_t> a,
@@ -6841,6 +7546,36 @@ HWY_API Vec128<T, N> OddEven(const Vec128<T, N> a, const Vec128<T, N> b) {
   return IfThenElse(MaskFromVec(vec), b, a);
 }
 
+// ------------------------------ InterleaveEven
+template <class D, HWY_IF_T_SIZE_ONE_OF_D(D, (1 << 1) | (1 << 2) | (1 << 4))>
+HWY_API VFromD<D> InterleaveEven(D /*d*/, VFromD<D> a, VFromD<D> b) {
+#if HWY_ARCH_ARM_A64
+  return detail::InterleaveEven(a, b);
+#else
+  return VFromD<D>(detail::InterleaveEvenOdd(a.raw, b.raw).val[0]);
+#endif
+}
+
+template <class D, HWY_IF_T_SIZE_D(D, 8)>
+HWY_API VFromD<D> InterleaveEven(D /*d*/, VFromD<D> a, VFromD<D> b) {
+  return InterleaveLower(a, b);
+}
+
+// ------------------------------ InterleaveOdd
+template <class D, HWY_IF_T_SIZE_ONE_OF_D(D, (1 << 1) | (1 << 2) | (1 << 4))>
+HWY_API VFromD<D> InterleaveOdd(D /*d*/, VFromD<D> a, VFromD<D> b) {
+#if HWY_ARCH_ARM_A64
+  return detail::InterleaveOdd(a, b);
+#else
+  return VFromD<D>(detail::InterleaveEvenOdd(a.raw, b.raw).val[1]);
+#endif
+}
+
+template <class D, HWY_IF_T_SIZE_D(D, 8)>
+HWY_API VFromD<D> InterleaveOdd(D d, VFromD<D> a, VFromD<D> b) {
+  return InterleaveUpper(d, a, b);
+}
+
 // ------------------------------ OddEvenBlocks
 template <typename T, size_t N>
 HWY_API Vec128<T, N> OddEvenBlocks(Vec128<T, N> /* odd */, Vec128<T, N> even) {
@@ -6862,12 +7597,14 @@ HWY_API VFromD<D> ReverseBlocks(D /* tag */, VFromD<D> v) {
 
 // ------------------------------ ReorderDemote2To (OddEven)
 
-template <class D, HWY_IF_V_SIZE_LE_D(D, 16), HWY_IF_BF16_D(D),
-          class V32 = VFromD<Repartition<float, D>>>
-HWY_API VFromD<D> ReorderDemote2To(D dbf16, V32 a, V32 b) {
-  const RebindToUnsigned<decltype(dbf16)> du16;
-  return BitCast(dbf16, ConcatOdd(du16, BitCast(du16, b), BitCast(du16, a)));
+#if HWY_NEON_HAVE_F32_TO_BF16C
+template <class D, HWY_IF_BF16_D(D)>
+HWY_API VFromD<D> ReorderDemote2To(D dbf16, VFromD<Repartition<float, D>> a,
+                                   VFromD<Repartition<float, D>> b) {
+  const Half<decltype(dbf16)> dh_bf16;
+  return Combine(dbf16, DemoteTo(dh_bf16, b), DemoteTo(dh_bf16, a));
 }
+#endif  // HWY_NEON_HAVE_F32_TO_BF16C
 
 template <class D, HWY_IF_I32_D(D)>
 HWY_API Vec128<int32_t> ReorderDemote2To(D d32, Vec128<int64_t> a,
@@ -7083,16 +7820,19 @@ HWY_API VFromD<D> OrderedDemote2To(D d, V a, V b) {
   return ReorderDemote2To(d, a, b);
 }
 
-template <class D, HWY_IF_BF16_D(D), class V32 = VFromD<Repartition<float, D>>>
-HWY_API VFromD<D> OrderedDemote2To(D dbf16, V32 a, V32 b) {
+#if HWY_NEON_HAVE_F32_TO_BF16C
+template <class D, HWY_IF_BF16_D(D)>
+HWY_API VFromD<D> OrderedDemote2To(D dbf16, VFromD<Repartition<float, D>> a,
+                                   VFromD<Repartition<float, D>> b) {
   return ReorderDemote2To(dbf16, a, b);
 }
+#endif  // HWY_NEON_HAVE_F32_TO_BF16C
 
 // ================================================== CRYPTO
 
 // (aarch64 or Arm7) and (__ARM_FEATURE_AES or HWY_HAVE_RUNTIME_DISPATCH).
 // Otherwise, rely on generic_ops-inl.h to emulate AESRound / CLMul*.
-#if HWY_TARGET == HWY_NEON
+#if HWY_TARGET != HWY_NEON_WITHOUT_AES
 
 #ifdef HWY_NATIVE_AES
 #undef HWY_NATIVE_AES
@@ -7143,7 +7883,7 @@ HWY_API Vec128<uint64_t> CLMulUpper(Vec128<uint64_t> a, Vec128<uint64_t> b) {
       (uint64x2_t)vmull_high_p64((poly64x2_t)a.raw, (poly64x2_t)b.raw));
 }
 
-#endif  // HWY_TARGET == HWY_NEON
+#endif  // HWY_TARGET != HWY_NEON_WITHOUT_AES
 
 // ================================================== MISC
 
@@ -7318,10 +8058,11 @@ HWY_API Vec128<uint64_t, (N + 1) / 2> MulEven(Vec128<uint32_t, N> a,
       vget_low_u64(vmull_u32(a_packed, b_packed)));
 }
 
-HWY_INLINE Vec128<uint64_t> MulEven(Vec128<uint64_t> a, Vec128<uint64_t> b) {
-  uint64_t hi;
-  uint64_t lo = Mul128(vgetq_lane_u64(a.raw, 0), vgetq_lane_u64(b.raw, 0), &hi);
-  return Vec128<uint64_t>(vsetq_lane_u64(hi, vdupq_n_u64(lo), 1));
+template <class T, HWY_IF_UI64(T)>
+HWY_INLINE Vec128<T> MulEven(Vec128<T> a, Vec128<T> b) {
+  T hi;
+  T lo = Mul128(GetLane(a), GetLane(b), &hi);
+  return Dup128VecFromValues(Full128<T>(), lo, hi);
 }
 
 // Multiplies odd lanes (1, 3 ..) and places the double-wide result into
@@ -7424,10 +8165,11 @@ HWY_API Vec128<uint64_t, (N + 1) / 2> MulOdd(Vec128<uint32_t, N> a,
       vget_low_u64(vmull_u32(a_packed, b_packed)));
 }
 
-HWY_INLINE Vec128<uint64_t> MulOdd(Vec128<uint64_t> a, Vec128<uint64_t> b) {
-  uint64_t hi;
-  uint64_t lo = Mul128(vgetq_lane_u64(a.raw, 1), vgetq_lane_u64(b.raw, 1), &hi);
-  return Vec128<uint64_t>(vsetq_lane_u64(hi, vdupq_n_u64(lo), 1));
+template <class T, HWY_IF_UI64(T)>
+HWY_INLINE Vec128<T> MulOdd(Vec128<T> a, Vec128<T> b) {
+  T hi;
+  T lo = Mul128(detail::GetLane<1>(a), detail::GetLane<1>(b), &hi);
+  return Dup128VecFromValues(Full128<T>(), lo, hi);
 }
 
 // ------------------------------ TableLookupBytes (Combine, LowerHalf)
@@ -7492,7 +8234,7 @@ HWY_API VI TableLookupBytesOr0(V bytes, VI from) {
 
 // ---------------------------- AESKeyGenAssist (AESLastRound, TableLookupBytes)
 
-#if HWY_TARGET == HWY_NEON
+#if HWY_TARGET != HWY_NEON_WITHOUT_AES
 template <uint8_t kRcon>
 HWY_API Vec128<uint8_t> AESKeyGenAssist(Vec128<uint8_t> v) {
   alignas(16) static constexpr uint8_t kRconXorMask[16] = {
@@ -7505,7 +8247,7 @@ HWY_API Vec128<uint8_t> AESKeyGenAssist(Vec128<uint8_t> v) {
   const auto sub_word_result = AESLastRound(w13, Load(d, kRconXorMask));
   return TableLookupBytes(sub_word_result, Load(d, kRotWordShuffle));
 }
-#endif  // HWY_TARGET == HWY_NEON
+#endif  // HWY_TARGET != HWY_NEON_WITHOUT_AES
 
 // ------------------------------ Scatter in generic_ops-inl.h
 // ------------------------------ Gather in generic_ops-inl.h

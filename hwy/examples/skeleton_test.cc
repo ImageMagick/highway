@@ -89,6 +89,8 @@ struct TestSumMulAdd {
     auto mul = hwy::AllocateAligned<T>(count);
     auto x = hwy::AllocateAligned<T>(count);
     auto add = hwy::AllocateAligned<T>(count);
+    HWY_ASSERT(mul && x && add);
+
     for (size_t i = 0; i < count; ++i) {
       mul[i] = hwy::ConvertScalarTo<T>(Random32(&rng) & 0xF);
       x[i] = hwy::ConvertScalarTo<T>(Random32(&rng) & 0xFF);
@@ -133,11 +135,10 @@ HWY_NOINLINE void TestAllSumMulAdd() {
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-
 namespace skeleton {
 HWY_BEFORE_TEST(SkeletonTest);
 HWY_EXPORT_AND_TEST_P(SkeletonTest, TestAllFloorLog2);
 HWY_EXPORT_AND_TEST_P(SkeletonTest, TestAllSumMulAdd);
+HWY_AFTER_TEST();
 }  // namespace skeleton
-
 #endif

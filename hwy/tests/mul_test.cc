@@ -77,6 +77,7 @@ struct TestSignedMul {
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
     const size_t N = Lanes(d);
     auto expected = AllocateAligned<T>(N);
+    HWY_ASSERT(expected);
 
     const Vec<D> v0 = Zero(d);
     const Vec<D> v1 = Set(d, static_cast<T>(1));
@@ -129,16 +130,38 @@ HWY_NOINLINE void TestAllMul() {
 }
 
 struct TestMulHigh {
+  template <size_t kSize, class T, hwy::EnableIf<(kSize != 8)>* = nullptr>
+  static HWY_INLINE RemoveCvRef<T> ScalarMulHigh(hwy::SizeTag<kSize>, T a,
+                                                 T b) {
+    using TW = MakeWide<RemoveCvRef<T>>;
+    return static_cast<T>((static_cast<TW>(a) * static_cast<TW>(b)) >>
+                          (sizeof(RemoveCvRef<T>) * 8));
+  }
+
+  template <class T>
+  static HWY_INLINE RemoveCvRef<T> ScalarMulHigh(hwy::SizeTag<8>, T a, T b) {
+    RemoveCvRef<T> hi;
+    Mul128(a, b, &hi);
+    return hi;
+  }
+
+  template <class T>
+  static HWY_INLINE RemoveCvRef<T> ScalarMulHigh(T a, T b) {
+    using NonCvRefT = RemoveCvRef<T>;
+    return ScalarMulHigh(hwy::SizeTag<sizeof(NonCvRefT)>(),
+                         static_cast<NonCvRefT>(a), static_cast<NonCvRefT>(b));
+  }
+
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
-    using Wide = MakeWide<T>;
+    using TU = MakeUnsigned<T>;
     const size_t N = Lanes(d);
     auto in_lanes = AllocateAligned<T>(N);
     auto expected_lanes = AllocateAligned<T>(N);
+    HWY_ASSERT(in_lanes && expected_lanes);
 
     const Vec<D> vi = Iota(d, 1);
-    // no i8 supported, so no wraparound
-    const Vec<D> vni = Iota(d, ConvertScalarTo(~N + 1));
+    const Vec<D> vni = Iota(d, static_cast<T>(0ULL - static_cast<uint64_t>(N)));
 
     const Vec<D> v0 = Zero(d);
     HWY_ASSERT_VEC_EQ(d, v0, MulHigh(v0, v0));
@@ -147,26 +170,23 @@ struct TestMulHigh {
 
     // Large positive squared
     for (size_t i = 0; i < N; ++i) {
-      in_lanes[i] = static_cast<T>(LimitsMax<T>() >> i);
-      expected_lanes[i] =
-          static_cast<T>((Wide(in_lanes[i]) * in_lanes[i]) >> 16);
+      in_lanes[i] = static_cast<T>(LimitsMax<T>() >> (i & (sizeof(T) * 8 - 1)));
+      expected_lanes[i] = ScalarMulHigh(in_lanes[i], in_lanes[i]);
     }
     Vec<D> v = Load(d, in_lanes.get());
     HWY_ASSERT_VEC_EQ(d, expected_lanes.get(), MulHigh(v, v));
 
     // Large positive * small positive
     for (size_t i = 0; i < N; ++i) {
-      expected_lanes[i] =
-          static_cast<T>((Wide(in_lanes[i]) * static_cast<T>(1 + i)) >> 16);
+      expected_lanes[i] = ScalarMulHigh(in_lanes[i], static_cast<T>(1 + i));
     }
     HWY_ASSERT_VEC_EQ(d, expected_lanes.get(), MulHigh(v, vi));
     HWY_ASSERT_VEC_EQ(d, expected_lanes.get(), MulHigh(vi, v));
 
     // Large positive * small negative
     for (size_t i = 0; i < N; ++i) {
-      const T neg = static_cast<T>(static_cast<T>(i) - static_cast<T>(N));
-      expected_lanes[i] =
-          static_cast<T>((static_cast<Wide>(in_lanes[i]) * neg) >> 16);
+      const T neg = static_cast<T>(static_cast<TU>(i) - static_cast<TU>(N));
+      expected_lanes[i] = ScalarMulHigh(in_lanes[i], neg);
     }
     HWY_ASSERT_VEC_EQ(d, expected_lanes.get(), MulHigh(v, vni));
     HWY_ASSERT_VEC_EQ(d, expected_lanes.get(), MulHigh(vni, v));
@@ -175,8 +195,7 @@ struct TestMulHigh {
 
 HWY_NOINLINE void TestAllMulHigh() {
   ForPartialVectors<TestMulHigh> test;
-  test(int16_t());
-  test(uint16_t());
+  ForIntegerTypes(test);
 }
 
 struct TestMulFixedPoint15 {
@@ -190,6 +209,7 @@ struct TestMulFixedPoint15 {
     auto in1 = AllocateAligned<T>(N);
     auto in2 = AllocateAligned<T>(N);
     auto expected = AllocateAligned<T>(N);
+    HWY_ASSERT(in1 && in2 && expected);
 
     // Random inputs in each lane
     RandomState rng;
@@ -259,6 +279,7 @@ struct TestMulEven {
     const size_t N = Lanes(d);
     auto in_lanes = AllocateAligned<T>(N);
     auto expected = AllocateAligned<Wide>(Lanes(d2));
+    HWY_ASSERT(in_lanes && expected);
     for (size_t i = 0; i < N; i += 2) {
       in_lanes[i + 0] =
           ConvertScalarTo<T>(LimitsMax<T>() >> (i & kShiftAmtMask));
@@ -310,6 +331,7 @@ struct TestMulOdd {
     constexpr size_t kShiftAmtMask = sizeof(T) * 8 - 1;
     auto in_lanes = AllocateAligned<T>(N);
     auto expected = AllocateAligned<Wide>(Lanes(d2));
+    HWY_ASSERT(in_lanes && expected);
     for (size_t i = 0; i < N; i += 2) {
       in_lanes[i + 0] = 1;  // unused
       in_lanes[i + 1] =
@@ -354,13 +376,14 @@ struct TestMulEvenOdd64 {
     auto in2 = AllocateAligned<T>(N);
     auto expected_even = AllocateAligned<T>(N);
     auto expected_odd = AllocateAligned<T>(N);
+    HWY_ASSERT(in1 && in2 && expected_even && expected_odd);
 
     // Random inputs in each lane
     RandomState rng;
     for (size_t rep = 0; rep < AdjustedReps(1000); ++rep) {
       for (size_t i = 0; i < N; ++i) {
-        in1[i] = Random64(&rng);
-        in2[i] = Random64(&rng);
+        in1[i] = static_cast<T>(Random64(&rng));
+        in2[i] = static_cast<T>(Random64(&rng));
       }
 
       for (size_t i = 0; i < N; i += 2) {
@@ -384,6 +407,7 @@ HWY_NOINLINE void TestAllMulEven() {
 #if HWY_HAVE_INTEGER64
   ForUI32(ForGEVectors<64, TestMulEven>());
 #if HWY_TARGET != HWY_SCALAR
+  ForGEVectors<128, TestMulEvenOdd64>()(int64_t());
   ForGEVectors<128, TestMulEvenOdd64>()(uint64_t());
 #endif  // HWY_TARGET != HWY_SCALAR
 #endif  // HWY_HAVE_INTEGER64
@@ -417,6 +441,7 @@ struct TestMulAdd {
 
     const size_t N = Lanes(d);
     auto expected = AllocateAligned<T>(N);
+    HWY_ASSERT(expected);
     HWY_ASSERT_VEC_EQ(d, k0, MulAdd(k0, k0, k0));
     HWY_ASSERT_VEC_EQ(d, v2, MulAdd(k0, v1, v2));
     HWY_ASSERT_VEC_EQ(d, v2, MulAdd(v1, k0, v2));
@@ -457,6 +482,7 @@ struct TestMulSub {
     const Vec<D> v2 = Iota(d, 2);
     const size_t N = Lanes(d);
     auto expected = AllocateAligned<T>(N);
+    HWY_ASSERT(expected);
 
     // Unlike RebindToSigned, we want to leave floating-point unchanged.
     // This allows Neg for unsigned types.
@@ -545,7 +571,7 @@ HWY_EXPORT_AND_TEST_P(HwyMulTest, TestAllMulFixedPoint15);
 HWY_EXPORT_AND_TEST_P(HwyMulTest, TestAllMulEven);
 HWY_EXPORT_AND_TEST_P(HwyMulTest, TestAllMulOdd);
 HWY_EXPORT_AND_TEST_P(HwyMulTest, TestAllMulAdd);
-
+HWY_AFTER_TEST();
 }  // namespace hwy
 
 #endif

@@ -62,7 +62,8 @@
 // Bits 0..3 reserved (4 targets)
 #define HWY_AVX3_SPR (1LL << 4)
 // Bit 5 reserved (likely AVX10.2 with 256-bit vectors)
-// Currently HWY_AVX3_DL plus a special case for CompressStore (10x as fast).
+// Currently HWY_AVX3_DL plus AVX512BF16 and a special case for CompressStore
+// (10x as fast).
 // We may later also use VPCONFLICT.
 #define HWY_AVX3_ZEN4 (1LL << 6)  // see HWY_WANT_AVX3_ZEN4 below
 
@@ -84,14 +85,21 @@
 #define HWY_HIGHEST_TARGET_BIT_X86 14
 
 // --------------------------- Arm: 15 targets (+ one fallback)
-// Bits 15..23 reserved (9 targets)
-#define HWY_SVE2_128 (1LL << 24)  // specialized target (e.g. Arm N2)
-#define HWY_SVE_256 (1LL << 25)   // specialized target (e.g. Arm V1)
-#define HWY_SVE2 (1LL << 26)
-#define HWY_SVE (1LL << 27)
+// Bits 15..17 reserved (3 targets)
+#define HWY_SVE2_128 (1LL << 18)  // specialized (e.g. Neoverse V2/N2/N3)
+#define HWY_SVE_256 (1LL << 19)   // specialized (Neoverse V1)
+// Bits 20-22 reserved for later SVE (3 targets)
+#define HWY_SVE2 (1LL << 23)
+#define HWY_SVE (1LL << 24)
+// Bit 25 reserved for NEON
+#define HWY_NEON_BF16 (1LL << 26)  // fp16/dot/bf16 (e.g. Neoverse V2/N2/N3)
+// Bit 27 reserved for NEON
 #define HWY_NEON (1LL << 28)  // Implies support for AES
 #define HWY_NEON_WITHOUT_AES (1LL << 29)
 #define HWY_HIGHEST_TARGET_BIT_ARM 29
+
+#define HWY_ALL_NEON (HWY_NEON_WITHOUT_AES | HWY_NEON | HWY_NEON_BF16)
+#define HWY_ALL_SVE (HWY_SVE | HWY_SVE2 | HWY_SVE_256 | HWY_SVE2_128)
 
 // --------------------------- RISC-V: 9 targets (+ one fallback)
 // Bits 30..36 reserved (7 targets)
@@ -110,6 +118,8 @@
 #define HWY_Z15 (1LL << 50)    // Z15
 #define HWY_Z14 (1LL << 51)    // Z14
 #define HWY_HIGHEST_TARGET_BIT_PPC 51
+
+#define HWY_ALL_PPC (HWY_PPC8 | HWY_PPC9 | HWY_PPC10)
 
 // --------------------------- WebAssembly: 9 targets (+ one fallback)
 // Bits 52..57 reserved (6 targets)
@@ -188,7 +198,7 @@
 
 // armv7be has not been tested and is not yet supported.
 #if HWY_ARCH_ARM_V7 && HWY_IS_BIG_ENDIAN
-#define HWY_BROKEN_ARM7_BIG_ENDIAN (HWY_NEON | HWY_NEON_WITHOUT_AES)
+#define HWY_BROKEN_ARM7_BIG_ENDIAN HWY_ALL_NEON
 #else
 #define HWY_BROKEN_ARM7_BIG_ENDIAN 0
 #endif
@@ -199,9 +209,17 @@
 #if HWY_ARCH_ARM_V7 && (__ARM_ARCH_PROFILE == 'A') && \
     !defined(__ARM_VFPV4__) &&                        \
     !((__ARM_NEON_FP & 0x2 /* half-float */) && (__ARM_FEATURE_FMA == 1))
-#define HWY_BROKEN_ARM7_WITHOUT_VFP4 (HWY_NEON | HWY_NEON_WITHOUT_AES)
+#define HWY_BROKEN_ARM7_WITHOUT_VFP4 HWY_ALL_NEON
 #else
 #define HWY_BROKEN_ARM7_WITHOUT_VFP4 0
+#endif
+
+// HWY_NEON_BF16 requires recent compilers.
+#if (HWY_COMPILER_CLANG != 0 && HWY_COMPILER_CLANG < 1700) || \
+    (HWY_COMPILER_GCC_ACTUAL != 0 && HWY_COMPILER_GCC_ACTUAL < 1302)
+#define HWY_BROKEN_NEON_BF16 (HWY_NEON_BF16)
+#else
+#define HWY_BROKEN_NEON_BF16 0
 #endif
 
 // SVE[2] require recent clang or gcc versions.
@@ -247,7 +265,7 @@
   (HWY_BROKEN_CLANG6 | HWY_BROKEN_32BIT | HWY_BROKEN_MSVC |    \
    HWY_BROKEN_AVX3_DL_ZEN4 | HWY_BROKEN_AVX3_SPR |             \
    HWY_BROKEN_ARM7_BIG_ENDIAN | HWY_BROKEN_ARM7_WITHOUT_VFP4 | \
-   HWY_BROKEN_SVE | HWY_BROKEN_PPC10)
+   HWY_BROKEN_NEON_BF16 | HWY_BROKEN_SVE | HWY_BROKEN_PPC10)
 
 #endif  // HWY_BROKEN_TARGETS
 
@@ -335,7 +353,10 @@
 
 #if HWY_ARCH_ARM
 
-#if defined(__ARM_FEATURE_SVE2)
+// Also check compiler version as done for HWY_ATTAINABLE_SVE2 because the
+// static target (influenced here) must be one of the attainable targets.
+#if defined(__ARM_FEATURE_SVE2) && \
+    (HWY_COMPILER_CLANG >= 1400 || HWY_COMPILER_GCC_ACTUAL >= 1200)
 #undef HWY_BASELINE_SVE2  // was 0, will be re-defined
 // If user specified -msve-vector-bits=128, they assert the vector length is
 // 128 bits and we should use the HWY_SVE2_128 (more efficient for some ops).
@@ -350,7 +371,8 @@
 #endif  // __ARM_FEATURE_SVE_BITS
 #endif  // __ARM_FEATURE_SVE2
 
-#if defined(__ARM_FEATURE_SVE)
+#if defined(__ARM_FEATURE_SVE) && \
+    (HWY_COMPILER_CLANG >= 900 || HWY_COMPILER_GCC_ACTUAL >= 800)
 #undef HWY_BASELINE_SVE  // was 0, will be re-defined
 // See above. If user-specified vector length matches our optimization, use it.
 #if defined(__ARM_FEATURE_SVE_BITS) && __ARM_FEATURE_SVE_BITS == 256
@@ -363,12 +385,17 @@
 // GCC 4.5.4 only defines __ARM_NEON__; 5.4 defines both.
 #if defined(__ARM_NEON__) || defined(__ARM_NEON)
 #undef HWY_BASELINE_NEON
-#if defined(__ARM_FEATURE_AES)
-#define HWY_BASELINE_NEON (HWY_NEON | HWY_NEON_WITHOUT_AES)
+#if defined(__ARM_FEATURE_AES) &&                    \
+    defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && \
+    defined(__ARM_FEATURE_DOTPROD) &&                \
+    defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC)
+#define HWY_BASELINE_NEON HWY_ALL_NEON
+#elif defined(__ARM_FEATURE_AES)
+#define HWY_BASELINE_NEON (HWY_NEON_WITHOUT_AES | HWY_NEON)
 #else
 #define HWY_BASELINE_NEON (HWY_NEON_WITHOUT_AES)
-#endif
-#endif
+#endif  // __ARM_FEATURE*
+#endif  // __ARM_NEON
 
 #endif  // HWY_ARCH_ARM
 
@@ -496,14 +523,16 @@
 #define HWY_BASELINE_AVX3_ZEN4 0
 #endif
 
-#if HWY_BASELINE_AVX3_DL != 0 && defined(__AVX512FP16__)
+#if HWY_BASELINE_AVX3_DL != 0 && defined(__AVX512BF16__) && \
+    defined(__AVX512FP16__)
 #define HWY_BASELINE_AVX3_SPR HWY_AVX3_SPR
 #else
 #define HWY_BASELINE_AVX3_SPR 0
 #endif
 
 // RVV requires intrinsics 0.11 or later, see #1156.
-#if HWY_ARCH_RVV && defined(__riscv_v_intrinsic) && __riscv_v_intrinsic >= 11000
+#if HWY_ARCH_RISCV && defined(__riscv_v_intrinsic) && \
+    __riscv_v_intrinsic >= 11000
 #define HWY_BASELINE_RVV HWY_RVV
 #else
 #define HWY_BASELINE_RVV 0
@@ -548,19 +577,43 @@
 #endif
 // Defining one of HWY_COMPILE_ONLY_* will trump HWY_COMPILE_ALL_ATTAINABLE.
 
+#ifndef HWY_HAVE_AUXV  // allow override
+#ifdef TOOLCHAIN_MISS_SYS_AUXV_H
+#define HWY_HAVE_AUXV 0  // CMake failed to find the header
+// glibc 2.16 added auxv, but checking for that requires features.h, and we do
+// not want to include system headers here. Instead check for the header
+// directly, which has been supported at least since GCC 5.4 and Clang 3.
+#elif defined(__has_include)  // note: wrapper macro fails on Clang ~17
+// clang-format off
+#if __has_include(<sys/auxv.h>)
+// clang-format on
+#define HWY_HAVE_AUXV 1  // header present
+#else
+#define HWY_HAVE_AUXV 0  // header not present
+#endif                   // __has_include
+#else                    // compiler lacks __has_include
+#define HWY_HAVE_AUXV 0
+#endif
+#endif  // HWY_HAVE_AUXV
+
+// Allow opting out, and without a guarantee of success, opting-in.
+#ifndef HWY_HAVE_RUNTIME_DISPATCH
 // Clang, GCC and MSVC allow runtime dispatch on x86.
 #if HWY_ARCH_X86
 #define HWY_HAVE_RUNTIME_DISPATCH 1
-// On Arm/PPC, GCC and Clang 16+ do, and we require Linux to detect CPU
-// capabilities. Currently require opt-in for Clang because it is experimental.
-#elif (HWY_ARCH_ARM || HWY_ARCH_PPC || HWY_ARCH_S390X) &&                    \
-    (HWY_COMPILER_GCC_ACTUAL || (HWY_COMPILER_CLANG >= 1600 &&               \
-                                 defined(HWY_ENABLE_CLANG_ARM_DISPATCH))) && \
-    HWY_OS_LINUX && !defined(TOOLCHAIN_MISS_SYS_AUXV_H)
+// On Arm, PPC, S390X, and RISC-V: GCC and Clang 17+ do, and we require Linux
+// to detect CPU capabilities.
+#elif (HWY_ARCH_ARM || HWY_ARCH_PPC || HWY_ARCH_S390X || HWY_ARCH_RISCV) &&    \
+    (HWY_COMPILER_GCC_ACTUAL || HWY_COMPILER_CLANG >= 1700) && HWY_OS_LINUX && \
+    HWY_HAVE_AUXV
+#define HWY_HAVE_RUNTIME_DISPATCH 1
+#elif HWY_ARCH_ARM_A64 && HWY_OS_APPLE && \
+    (HWY_COMPILER_GCC_ACTUAL || HWY_COMPILER_CLANG >= 1700)
 #define HWY_HAVE_RUNTIME_DISPATCH 1
 #else
 #define HWY_HAVE_RUNTIME_DISPATCH 0
-#endif
+#endif  // HWY_ARCH_*
+#endif  // HWY_HAVE_RUNTIME_DISPATCH
 
 // AVX3_DL is not widely available yet. To reduce code size and compile time,
 // only include it in the set of attainable targets (for dynamic dispatch) if
@@ -572,22 +625,26 @@
 #endif
 
 #if HWY_ARCH_ARM_A64 && HWY_HAVE_RUNTIME_DISPATCH
-#define HWY_ATTAINABLE_NEON (HWY_NEON | HWY_NEON_WITHOUT_AES)
+#define HWY_ATTAINABLE_NEON HWY_ALL_NEON
 #elif HWY_ARCH_ARM  // static dispatch, or HWY_ARCH_ARM_V7
 #define HWY_ATTAINABLE_NEON (HWY_BASELINE_NEON)
 #else
 #define HWY_ATTAINABLE_NEON 0
 #endif
 
-#if HWY_ARCH_ARM_A64 && (HWY_HAVE_RUNTIME_DISPATCH || \
-                         (HWY_ENABLED_BASELINE & (HWY_SVE | HWY_SVE_256)))
+#if HWY_ARCH_ARM_A64 &&                                              \
+    (HWY_COMPILER_CLANG >= 900 || HWY_COMPILER_GCC_ACTUAL >= 800) && \
+    (HWY_HAVE_RUNTIME_DISPATCH ||                                    \
+     (HWY_ENABLED_BASELINE & (HWY_SVE | HWY_SVE_256)))
 #define HWY_ATTAINABLE_SVE (HWY_SVE | HWY_SVE_256)
 #else
 #define HWY_ATTAINABLE_SVE 0
 #endif
 
-#if HWY_ARCH_ARM_A64 && (HWY_HAVE_RUNTIME_DISPATCH || \
-                         (HWY_ENABLED_BASELINE & (HWY_SVE2 | HWY_SVE2_128)))
+#if HWY_ARCH_ARM_A64 &&                                                \
+    (HWY_COMPILER_CLANG >= 1400 || HWY_COMPILER_GCC_ACTUAL >= 1200) && \
+    (HWY_HAVE_RUNTIME_DISPATCH ||                                      \
+     (HWY_ENABLED_BASELINE & (HWY_SVE2 | HWY_SVE2_128)))
 #define HWY_ATTAINABLE_SVE2 (HWY_SVE2 | HWY_SVE2_128)
 #else
 #define HWY_ATTAINABLE_SVE2 0
@@ -617,6 +674,12 @@
 #define HWY_ATTAINABLE_S390X 0
 #endif
 
+#if HWY_ARCH_RISCV && HWY_HAVE_RUNTIME_DISPATCH
+#define HWY_ATTAINABLE_RISCV (HWY_RVV)
+#else
+#define HWY_ATTAINABLE_RISCV 0
+#endif
+
 // Attainable means enabled and the compiler allows intrinsics (even when not
 // allowed to autovectorize). Used in 3 and 4.
 #if HWY_ARCH_X86
@@ -640,6 +703,9 @@
 #elif HWY_ARCH_S390X
 #define HWY_ATTAINABLE_TARGETS \
   HWY_ENABLED(HWY_BASELINE_SCALAR | HWY_ATTAINABLE_S390X)
+#elif HWY_ARCH_RVV
+#define HWY_ATTAINABLE_TARGETS \
+  HWY_ENABLED(HWY_BASELINE_SCALAR | HWY_ATTAINABLE_RISCV)
 #else
 #define HWY_ATTAINABLE_TARGETS (HWY_ENABLED_BASELINE)
 #endif  // HWY_ARCH_*

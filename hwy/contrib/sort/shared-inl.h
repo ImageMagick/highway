@@ -72,12 +72,10 @@ struct SortConstants {
 
   static constexpr HWY_INLINE size_t PartitionBufNum(size_t N) {
     // The main loop reads kPartitionUnroll vectors, and first loads from
-    // both left and right beforehand, so it requires min = 2 *
-    // kPartitionUnroll vectors. To handle smaller amounts (only guaranteed
-    // >= BaseCaseNumLanes), we partition up to that much into a buffer. Add
-    // another N because we increase num_here if less than N, and two more
-    // for the final vectors handled via StoreRightAndBuf.
-    return (2 * kPartitionUnroll + 1 + 2) * N;
+    // both left and right beforehand, so it requires 2 * kPartitionUnroll
+    // vectors. To handle amounts between that and BaseCaseNumLanes(), we
+    // partition up 3 * kPartitionUnroll + 1 vectors into a two-part buffer.
+    return 2 * (3 * kPartitionUnroll + 1) * N;
   }
 
   // Max across the three buffer usages.
@@ -106,8 +104,8 @@ struct SortConstants {
   }
 };
 
-static_assert(SortConstants::MaxBufBytes<1>(64) <= 1280, "Unexpectedly high");
-static_assert(SortConstants::MaxBufBytes<2>(64) <= 1280, "Unexpectedly high");
+static_assert(SortConstants::MaxBufBytes<1>(64) <= 1664, "Unexpectedly high");
+static_assert(SortConstants::MaxBufBytes<2>(64) <= 1664, "Unexpectedly high");
 
 }  // namespace hwy
 
@@ -127,11 +125,12 @@ static_assert(SortConstants::MaxBufBytes<2>(64) <= 1280, "Unexpectedly high");
 
 // vqsort isn't available on HWY_SCALAR, and builds time out on MSVC opt and
 // Armv7 debug, and Armv8 GCC 11 asan hits an internal compiler error likely
-// due to https://gcc.gnu.org/bugzilla/show_bug.cgi?id=97696.
+// due to https://gcc.gnu.org/bugzilla/show_bug.cgi?id=97696. Armv8 Clang
+// hwasan/msan/tsan/asan also fail to build SVE (b/335157772).
 #undef VQSORT_ENABLED
-#if (HWY_TARGET == HWY_SCALAR) ||                 \
-    (HWY_COMPILER_MSVC && !HWY_IS_DEBUG_BUILD) || \
-    (HWY_ARCH_ARM_V7 && HWY_IS_DEBUG_BUILD) ||    \
+#if (HWY_TARGET == HWY_SCALAR) ||                                   \
+    (HWY_COMPILER_MSVC && !HWY_IS_DEBUG_BUILD) ||                   \
+    (HWY_ARCH_ARM_V7 && HWY_IS_DEBUG_BUILD) ||                      \
     (HWY_ARCH_ARM_A64 && HWY_COMPILER_GCC_ACTUAL && HWY_IS_ASAN)
 #define VQSORT_ENABLED 0
 #else
@@ -143,7 +142,7 @@ namespace HWY_NAMESPACE {
 
 // Default tag / vector width selector.
 #if HWY_TARGET == HWY_RVV
-// Use LMUL = 1/2; for SEW=64 this ends up emulated via vsetvl.
+// Use LMUL = 1/2; for SEW=64 this ends up emulated via VSETVLI.
 template <typename T>
 using SortTag = ScalableTag<T, -1>;
 #else

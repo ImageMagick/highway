@@ -21,11 +21,13 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <initializer_list>
 #include <memory>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "hwy/base.h"
 #include "hwy/per_target.h"
@@ -35,8 +37,13 @@ namespace hwy {
 // Minimum alignment of allocated memory for use in HWY_ASSUME_ALIGNED, which
 // requires a literal. To prevent false sharing, this should be at least the
 // L1 cache line size, usually 64 bytes. However, Intel's L2 prefetchers may
-// access pairs of lines, and POWER8 also has 128.
+// access pairs of lines, and M1 L2 and POWER8 lines are also 128 bytes.
 #define HWY_ALIGNMENT 128
+
+template <typename T>
+HWY_API constexpr bool IsAligned(T* ptr, size_t align = HWY_ALIGNMENT) {
+  return reinterpret_cast<uintptr_t>(ptr) % align == 0;
+}
 
 // Pointers to functions equivalent to malloc/free with an opaque void* passed
 // to them.
@@ -123,6 +130,46 @@ AlignedUniquePtr<T> MakeUniqueAligned(Args&&... args) {
   return AlignedUniquePtr<T>(new (ptr) T(std::forward<Args>(args)...),
                              AlignedDeleter());
 }
+
+template <class T>
+struct AlignedAllocator {
+  using value_type = T;
+
+  AlignedAllocator() = default;
+
+  template <class V>
+  explicit AlignedAllocator(const AlignedAllocator<V>&) noexcept {}
+
+  template <class V>
+  value_type* allocate(V n) {
+    static_assert(std::is_integral<V>::value,
+                  "AlignedAllocator only supports integer types");
+    static_assert(sizeof(V) <= sizeof(std::size_t),
+                  "V n must be smaller or equal size_t to avoid overflow");
+    return static_cast<value_type*>(
+        AllocateAlignedBytes(static_cast<std::size_t>(n) * sizeof(value_type)));
+  }
+
+  template <class V>
+  void deallocate(value_type* p, HWY_MAYBE_UNUSED V n) {
+    return FreeAlignedBytes(p, nullptr, nullptr);
+  }
+};
+
+template <class T, class V>
+constexpr bool operator==(const AlignedAllocator<T>&,
+                          const AlignedAllocator<V>&) noexcept {
+  return true;
+}
+
+template <class T, class V>
+constexpr bool operator!=(const AlignedAllocator<T>&,
+                          const AlignedAllocator<V>&) noexcept {
+  return false;
+}
+
+template <class T>
+using AlignedVector = std::vector<T, AlignedAllocator<T>>;
 
 // Helpers for array allocators (avoids overflow)
 namespace detail {

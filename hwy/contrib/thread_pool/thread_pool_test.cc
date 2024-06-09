@@ -27,53 +27,14 @@
 #include <atomic>
 #include <vector>
 
-#include "gtest/gtest.h"
-#include "hwy/base.h"                  // PopCount
-#include "hwy/detect_compiler_arch.h"  // HWY_ARCH_WASM
-#include "hwy/tests/test_util-inl.h"   // AdjustedReps
+#include "hwy/base.h"  // PopCount
+#include "hwy/contrib/thread_pool/topology.h"
+#include "hwy/tests/hwy_gtest.h"
+#include "hwy/tests/test_util-inl.h"  // AdjustedReps
 
 namespace hwy {
 namespace {
 using HWY_NAMESPACE::AdjustedReps;
-
-// Exhaustive test for small/large dividends and divisors
-TEST(ThreadPoolTest, TestDivisor) {
-  // Small d, small n
-  for (uint32_t d = 1; d < 256; ++d) {
-    const Divisor divisor(d);
-    for (uint32_t n = 0; n < 256; ++n) {
-      HWY_ASSERT(divisor.Divide(n) == n / d);
-      HWY_ASSERT(divisor.Remainder(n) == n % d);
-    }
-  }
-
-  // Large d, small n
-  for (uint32_t d = 0xFFFFFF00u; d != 0; ++d) {
-    const Divisor divisor(d);
-    for (uint32_t n = 0; n < 256; ++n) {
-      HWY_ASSERT(divisor.Divide(n) == n / d);
-      HWY_ASSERT(divisor.Remainder(n) == n % d);
-    }
-  }
-
-  // Small d, large n
-  for (uint32_t d = 1; d < 256; ++d) {
-    const Divisor divisor(d);
-    for (uint32_t n = 0xFFFFFF00u; n != 0; ++n) {
-      HWY_ASSERT(divisor.Divide(n) == n / d);
-      HWY_ASSERT(divisor.Remainder(n) == n % d);
-    }
-  }
-
-  // Large d, large n
-  for (uint32_t d = 0xFFFFFF00u; d != 0; ++d) {
-    const Divisor divisor(d);
-    for (uint32_t n = 0xFFFFFF00u; n != 0; ++n) {
-      HWY_ASSERT(divisor.Divide(n) == n / d);
-      HWY_ASSERT(divisor.Remainder(n) == n % d);
-    }
-  }
-}
 
 TEST(ThreadPoolTest, TestCoprime) {
   // 1 is coprime with anything
@@ -287,7 +248,7 @@ TEST(ThreadPoolTest, TestDeprecated) {
 // pool can be reused (multiple consecutive Run calls), pool can be destroyed
 // (joining with its threads), num_threads=0 works (runs on current thread).
 TEST(ThreadPoolTest, TestPool) {
-  if (HWY_ARCH_WASM) return;  // WASM threading is unreliable
+  if (!HaveThreadingSupport()) return;
 
   ThreadPool inner(0);
 
@@ -345,7 +306,7 @@ struct SmallAssignmentState {
 
 // Verify "thread" parameter when processing few tasks.
 TEST(ThreadPoolTest, TestSmallAssignments) {
-  if (HWY_ARCH_WASM) return;  // WASM threading is unreliable
+  if (!HaveThreadingSupport()) return;
 
   static SmallAssignmentState state;
 
@@ -395,7 +356,7 @@ struct Counter {
 
 // Can switch between any wait mode, and multiple times.
 TEST(ThreadPoolTest, TestWaitMode) {
-  if (HWY_ARCH_WASM) return;  // WASM threading is unreliable
+  if (!HaveThreadingSupport()) return;
 
   const size_t kNumThreads = 9;
   ThreadPool pool(kNumThreads);
@@ -407,7 +368,7 @@ TEST(ThreadPoolTest, TestWaitMode) {
 }
 
 TEST(ThreadPoolTest, TestCounter) {
-  if (HWY_ARCH_WASM) return;  // WASM threading is unreliable
+  if (!HaveThreadingSupport()) return;
 
   const size_t kNumThreads = 12;
   ThreadPool pool(kNumThreads);
@@ -435,3 +396,5 @@ TEST(ThreadPoolTest, TestCounter) {
 
 }  // namespace
 }  // namespace hwy
+
+HWY_TEST_MAIN();

@@ -16,7 +16,7 @@
 #ifndef HIGHWAY_HWY_BASE_H_
 #define HIGHWAY_HWY_BASE_H_
 
-// For SIMD module implementations and their callers, target-independent.
+// Target-independent definitions.
 
 // IWYU pragma: begin_exports
 #include <stddef.h>
@@ -25,11 +25,17 @@
 #include "hwy/detect_compiler_arch.h"
 #include "hwy/highway_export.h"
 
-#if HWY_COMPILER_MSVC && defined(_MSVC_LANG) && _MSVC_LANG > __cplusplus
-#define HWY_CXX_LANG _MSVC_LANG
-#else
-#define HWY_CXX_LANG __cplusplus
-#endif
+// API version (https://semver.org/); keep in sync with CMakeLists.txt.
+#define HWY_MAJOR 1
+#define HWY_MINOR 2
+#define HWY_PATCH 0
+
+// True if the Highway version >= major.minor.0. Added in 1.2.0.
+#define HWY_VERSION_GE(major, minor) \
+  (HWY_MAJOR > (major) || (HWY_MAJOR == (major) && HWY_MINOR >= (minor)))
+// True if the Highway version < major.minor.0. Added in 1.2.0.
+#define HWY_VERSION_LT(major, minor) \
+  (HWY_MAJOR < (major) || (HWY_MAJOR == (major) && HWY_MINOR < (minor)))
 
 // "IWYU pragma: keep" does not work for these includes, so hide from the IDE.
 #if !HWY_IDE
@@ -47,14 +53,25 @@
 
 #endif  // !HWY_IDE
 
-#if !defined(HWY_NO_LIBCXX) && HWY_CXX_LANG > 201703L &&                    \
-    __cpp_impl_three_way_comparison >= 201907L && defined(__has_include) && \
-    !defined(HWY_DISABLE_CXX20_THREE_WAY_COMPARE)
+#ifndef HWY_HAVE_COMPARE_HEADER  // allow override
+#define HWY_HAVE_COMPARE_HEADER 0
+#if defined(__has_include)  // note: wrapper macro fails on Clang ~17
 #if __has_include(<compare>)
+#undef HWY_HAVE_COMPARE_HEADER
+#define HWY_HAVE_COMPARE_HEADER 1
+#endif  // __has_include
+#endif  // defined(__has_include)
+#endif  // HWY_HAVE_COMPARE_HEADER
+
+#ifndef HWY_HAVE_CXX20_THREE_WAY_COMPARE  // allow override
+#if !defined(HWY_NO_LIBCXX) && defined(__cpp_impl_three_way_comparison) && \
+    __cpp_impl_three_way_comparison >= 201907L && HWY_HAVE_COMPARE_HEADER
 #include <compare>
 #define HWY_HAVE_CXX20_THREE_WAY_COMPARE 1
+#else
+#define HWY_HAVE_CXX20_THREE_WAY_COMPARE 0
 #endif
-#endif
+#endif  // HWY_HAVE_CXX20_THREE_WAY_COMPARE
 
 // IWYU pragma: end_exports
 
@@ -72,6 +89,7 @@
 
 #include <intrin.h>
 
+#define HWY_FUNCTION __FUNCSIG__  // function name + template args
 #define HWY_RESTRICT __restrict
 #define HWY_INLINE __forceinline
 #define HWY_NOINLINE __declspec(noinline)
@@ -92,6 +110,7 @@
 
 #else
 
+#define HWY_FUNCTION __PRETTY_FUNCTION__  // function name + template args
 #define HWY_RESTRICT __restrict__
 // force inlining without optimization enabled creates very inefficient code
 // that can cause compiler timeout
@@ -139,9 +158,10 @@ namespace hwy {
 #define HWY_ASSUME_ALIGNED(ptr, align) (ptr) /* not supported */
 #endif
 
-// Special case to increases required alignment
+// Returns a pointer whose type is `type` (T*), while allowing the compiler to
+// assume that the untyped pointer `ptr` is aligned to a multiple of sizeof(T).
 #define HWY_RCAST_ALIGNED(type, ptr) \
-  reinterpret_cast<type>(HWY_ASSUME_ALIGNED((ptr), alignof(type)))
+  reinterpret_cast<type>(HWY_ASSUME_ALIGNED((ptr), alignof(RemovePtr<type>)))
 
 // Clang and GCC require attributes on each function into which SIMD intrinsics
 // are inlined. Support both per-function annotation (HWY_ATTR) for lambdas and
@@ -240,22 +260,39 @@ HWY_DLLEXPORT HWY_NORETURN void HWY_FORMAT(3, 4)
     }                                     \
   } while (0)
 
-#if HWY_HAS_FEATURE(memory_sanitizer) || defined(MEMORY_SANITIZER)
+#if HWY_HAS_FEATURE(memory_sanitizer) || defined(MEMORY_SANITIZER) || \
+    defined(__SANITIZE_MEMORY__)
 #define HWY_IS_MSAN 1
 #else
 #define HWY_IS_MSAN 0
 #endif
 
-#if HWY_HAS_FEATURE(address_sanitizer) || defined(ADDRESS_SANITIZER)
+#if HWY_HAS_FEATURE(address_sanitizer) || defined(ADDRESS_SANITIZER) || \
+    defined(__SANITIZE_ADDRESS__)
 #define HWY_IS_ASAN 1
 #else
 #define HWY_IS_ASAN 0
 #endif
 
-#if HWY_HAS_FEATURE(thread_sanitizer) || defined(THREAD_SANITIZER)
+#if HWY_HAS_FEATURE(hwaddress_sanitizer) || defined(HWADDRESS_SANITIZER) || \
+    defined(__SANITIZE_HWADDRESS__)
+#define HWY_IS_HWASAN 1
+#else
+#define HWY_IS_HWASAN 0
+#endif
+
+#if HWY_HAS_FEATURE(thread_sanitizer) || defined(THREAD_SANITIZER) || \
+    defined(__SANITIZE_THREAD__)
 #define HWY_IS_TSAN 1
 #else
 #define HWY_IS_TSAN 0
+#endif
+
+#if HWY_HAS_FEATURE(undefined_behavior_sanitizer) || \
+    defined(UNDEFINED_BEHAVIOR_SANITIZER)
+#define HWY_IS_UBSAN 1
+#else
+#define HWY_IS_UBSAN 0
 #endif
 
 // MSAN may cause lengthy build times or false positives e.g. in AVX3 DemoteTo.
@@ -271,7 +308,8 @@ HWY_DLLEXPORT HWY_NORETURN void HWY_FORMAT(3, 4)
 // Clang does not define NDEBUG, but it and GCC define __OPTIMIZE__, and recent
 // MSVC defines NDEBUG (if not, could instead check _DEBUG).
 #if (!defined(__OPTIMIZE__) && !defined(NDEBUG)) || HWY_IS_ASAN || \
-    HWY_IS_MSAN || HWY_IS_TSAN || defined(__clang_analyzer__)
+    HWY_IS_HWASAN || HWY_IS_MSAN || HWY_IS_TSAN || HWY_IS_UBSAN || \
+    defined(__clang_analyzer__)
 #define HWY_IS_DEBUG_BUILD 1
 #else
 #define HWY_IS_DEBUG_BUILD 0
@@ -286,16 +324,6 @@ HWY_DLLEXPORT HWY_NORETURN void HWY_FORMAT(3, 4)
   } while (0)
 #endif
 
-#if __cpp_constexpr >= 201304L
-#define HWY_CXX14_CONSTEXPR constexpr
-#else
-#define HWY_CXX14_CONSTEXPR
-#endif
-
-#ifndef HWY_HAVE_CXX20_THREE_WAY_COMPARE
-#define HWY_HAVE_CXX20_THREE_WAY_COMPARE 0
-#endif
-
 //------------------------------------------------------------------------------
 // CopyBytes / ZeroBytes
 
@@ -304,9 +332,8 @@ HWY_DLLEXPORT HWY_NORETURN void HWY_FORMAT(3, 4)
 #pragma intrinsic(memset)
 #endif
 
-// The source/destination must not overlap/alias.
 template <size_t kBytes, typename From, typename To>
-HWY_API void CopyBytes(const From* from, To* to) {
+HWY_API void CopyBytes(const From* HWY_RESTRICT from, To* HWY_RESTRICT to) {
 #if HWY_COMPILER_MSVC
   memcpy(to, from, kBytes);
 #else
@@ -352,7 +379,7 @@ HWY_API void ZeroBytes(void* to, size_t num_bytes) {
 
 #if HWY_ARCH_X86
 static constexpr HWY_MAYBE_UNUSED size_t kMaxVectorSize = 64;  // AVX-512
-#elif HWY_ARCH_RVV && defined(__riscv_v_intrinsic) && \
+#elif HWY_ARCH_RISCV && defined(__riscv_v_intrinsic) && \
     __riscv_v_intrinsic >= 11000
 // Not actually an upper bound on the size.
 static constexpr HWY_MAYBE_UNUSED size_t kMaxVectorSize = 4096;
@@ -368,7 +395,7 @@ static constexpr HWY_MAYBE_UNUSED size_t kMaxVectorSize = 16;
 // exceed the stack size.
 #if HWY_ARCH_X86
 #define HWY_ALIGN_MAX alignas(64)
-#elif HWY_ARCH_RVV && defined(__riscv_v_intrinsic) && \
+#elif HWY_ARCH_RISCV && defined(__riscv_v_intrinsic) && \
     __riscv_v_intrinsic >= 11000
 #define HWY_ALIGN_MAX alignas(8)  // only elements need be aligned
 #else
@@ -559,6 +586,30 @@ using RemoveRef = typename RemoveRefT<T>::type;
 template <class T>
 using RemoveCvRef = RemoveConst<RemoveVolatile<RemoveRef<T>>>;
 
+template <class T>
+struct RemovePtrT {
+  using type = T;
+};
+template <class T>
+struct RemovePtrT<T*> {
+  using type = T;
+};
+template <class T>
+struct RemovePtrT<const T*> {
+  using type = T;
+};
+template <class T>
+struct RemovePtrT<volatile T*> {
+  using type = T;
+};
+template <class T>
+struct RemovePtrT<const volatile T*> {
+  using type = T;
+};
+
+template <class T>
+using RemovePtr = typename RemovePtrT<T>::type;
+
 // Insert into template/function arguments to enable this overload only for
 // vectors of exactly, at most (LE), or more than (GT) this many bytes.
 //
@@ -576,6 +627,7 @@ using RemoveCvRef = RemoveConst<RemoveVolatile<RemoveRef<T>>>;
 #define HWY_IF_LANES_GT(kN, lanes) hwy::EnableIf<(kN > lanes)>* = nullptr
 
 #define HWY_IF_UNSIGNED(T) hwy::EnableIf<!hwy::IsSigned<T>()>* = nullptr
+#define HWY_IF_NOT_UNSIGNED(T) hwy::EnableIf<hwy::IsSigned<T>()>* = nullptr
 #define HWY_IF_SIGNED(T)                                    \
   hwy::EnableIf<hwy::IsSigned<T>() && !hwy::IsFloat<T>() && \
                 !hwy::IsSpecialFloat<T>()>* = nullptr
@@ -1003,7 +1055,7 @@ HWY_API HWY_BITCASTSCALAR_CONSTEXPR To BitCastScalar(const From& val) {
 
 // RVV with f16 extension supports _Float16 and f16 vector ops. If set, implies
 // HWY_HAVE_FLOAT16.
-#if HWY_ARCH_RVV && defined(__riscv_zvfh) && HWY_COMPILER_CLANG >= 1600
+#if HWY_ARCH_RISCV && defined(__riscv_zvfh) && HWY_COMPILER_CLANG >= 1600
 #define HWY_RVV_HAVE_F16_VEC 1
 #else
 #define HWY_RVV_HAVE_F16_VEC 0
@@ -1351,8 +1403,22 @@ HWY_API HWY_F16_CONSTEXPR float16_t F16FromF32(float f32) {
   // 1[01] + 10 =  1[11]
   // 1[10] + 10 = C0[00]  (round up toward even with C=1 carry out)
   // 1[11] + 10 = C0[01]  (round up toward even with C=1 carry out)
-  const uint32_t odd_bit = (mantissa32 >> 13) & 1;
-  const uint32_t rounded = mantissa32 + odd_bit + 0xFFF;
+
+  // If |f32| >= 2^-24, f16_ulp_bit_idx is the index of the F32 mantissa bit
+  // that will be shifted down into the ULP bit of the rounded down F16 result
+
+  // The biased F32 exponent of 2^-14 (the smallest positive normal F16 value)
+  // is 113, and bit 13 of the F32 mantissa will be shifted down to into the ULP
+  // bit of the rounded down F16 result if |f32| >= 2^14
+
+  // If |f32| < 2^-24, f16_ulp_bit_idx is equal to 24 as there are 24 mantissa
+  // bits (including the implied 1 bit) in the mantissa of a normal F32 value
+  // and as we want to round up the mantissa if |f32| > 2^-25 && |f32| < 2^-24
+  const int32_t f16_ulp_bit_idx =
+      HWY_MIN(HWY_MAX(126 - static_cast<int32_t>(biased_exp32), 13), 24);
+  const uint32_t odd_bit = ((mantissa32 | 0x800000u) >> f16_ulp_bit_idx) & 1;
+  const uint32_t rounded =
+      mantissa32 + odd_bit + (uint32_t{1} << (f16_ulp_bit_idx - 1)) - 1u;
   const bool carry = rounded >= (1u << 23);
 
   const int32_t exp = static_cast<int32_t>(biased_exp32) - 127 + carry;
@@ -1741,12 +1807,42 @@ HWY_API HWY_BF16_CONSTEXPR float F32FromBF16(bfloat16_t bf) {
 #endif
 }
 
+namespace detail {
+
+// Returns the increment to add to the bits of a finite F32 value to round a
+// finite F32 to the nearest BF16 value
+static HWY_INLINE HWY_MAYBE_UNUSED constexpr uint32_t F32BitsToBF16RoundIncr(
+    const uint32_t f32_bits) {
+  return static_cast<uint32_t>(((f32_bits & 0x7FFFFFFFu) < 0x7F800000u)
+                                   ? (0x7FFFu + ((f32_bits >> 16) & 1u))
+                                   : 0u);
+}
+
+// Converts f32_bits (which is the bits of a F32 value) to BF16 bits,
+// rounded to the nearest F16 value
+static HWY_INLINE HWY_MAYBE_UNUSED constexpr uint16_t F32BitsToBF16Bits(
+    const uint32_t f32_bits) {
+  // Round f32_bits to the nearest BF16 by first adding
+  // F32BitsToBF16RoundIncr(f32_bits) to f32_bits and then right shifting
+  // f32_bits + F32BitsToBF16RoundIncr(f32_bits) by 16
+
+  // If f32_bits is the bit representation of a NaN F32 value, make sure that
+  // bit 6 of the BF16 result is set to convert SNaN F32 values to QNaN BF16
+  // values and to prevent NaN F32 values from being converted to an infinite
+  // BF16 value
+  return static_cast<uint16_t>(
+      ((f32_bits + F32BitsToBF16RoundIncr(f32_bits)) >> 16) |
+      (static_cast<uint32_t>((f32_bits & 0x7FFFFFFFu) > 0x7F800000u) << 6));
+}
+
+}  // namespace detail
+
 HWY_API HWY_BF16_CONSTEXPR bfloat16_t BF16FromF32(float f) {
 #if HWY_HAVE_SCALAR_BF16_OPERATORS
   return static_cast<bfloat16_t>(f);
 #else
   return bfloat16_t::FromBits(
-      static_cast<uint16_t>(BitCastScalar<uint32_t>(f) >> 16));
+      detail::F32BitsToBF16Bits(BitCastScalar<uint32_t>(f)));
 #endif
 }
 
@@ -2418,6 +2514,51 @@ constexpr inline size_t RoundUpTo(size_t what, size_t align) {
   return DivCeil(what, align) * align;
 }
 
+// Works for any `align`; if a power of two, compiler emits AND.
+constexpr inline size_t RoundDownTo(size_t what, size_t align) {
+  return what - (what % align);
+}
+
+namespace detail {
+
+// T is unsigned or T is signed and (val >> shift_amt) is an arithmetic right
+// shift
+template <class T>
+static HWY_INLINE constexpr T ScalarShr(hwy::UnsignedTag /*type_tag*/, T val,
+                                        int shift_amt) {
+  return static_cast<T>(val >> shift_amt);
+}
+
+// T is signed and (val >> shift_amt) is a non-arithmetic right shift
+template <class T>
+static HWY_INLINE constexpr T ScalarShr(hwy::SignedTag /*type_tag*/, T val,
+                                        int shift_amt) {
+  using TU = MakeUnsigned<MakeLaneTypeIfInteger<T>>;
+  return static_cast<T>(
+      (val < 0) ? static_cast<TU>(
+                      ~(static_cast<TU>(~static_cast<TU>(val)) >> shift_amt))
+                : static_cast<TU>(static_cast<TU>(val) >> shift_amt));
+}
+
+}  // namespace detail
+
+// If T is an signed integer type, ScalarShr is guaranteed to perform an
+// arithmetic right shift
+
+// Otherwise, if T is an unsigned integer type, ScalarShr is guaranteed to
+// perform a logical right shift
+template <class T, HWY_IF_INTEGER(RemoveCvRef<T>)>
+HWY_API constexpr RemoveCvRef<T> ScalarShr(T val, int shift_amt) {
+  using NonCvRefT = RemoveCvRef<T>;
+  return detail::ScalarShr(
+      hwy::SizeTag<((IsSigned<NonCvRefT>() &&
+                     (LimitsMin<NonCvRefT>() >> (sizeof(T) * 8 - 1)) !=
+                         static_cast<NonCvRefT>(-1))
+                        ? 0x100
+                        : 0)>(),
+      static_cast<NonCvRefT>(val), shift_amt);
+}
+
 // Undefined results for x == 0.
 HWY_API size_t Num0BitsBelowLS1Bit_Nonzero32(const uint32_t x) {
   HWY_DASSERT(x != 0);
@@ -2579,6 +2720,7 @@ HWY_INLINE constexpr T AddWithWraparound(T t, T2 n) {
 }
 
 #if HWY_COMPILER_MSVC && HWY_ARCH_X86_64
+#pragma intrinsic(_mul128)
 #pragma intrinsic(_umul128)
 #endif
 
@@ -2601,6 +2743,65 @@ HWY_API uint64_t Mul128(uint64_t a, uint64_t b, uint64_t* HWY_RESTRICT upper) {
   return (t << 32) | (lo_lo & kLo32);
 #endif
 }
+
+HWY_API int64_t Mul128(int64_t a, int64_t b, int64_t* HWY_RESTRICT upper) {
+#if defined(__SIZEOF_INT128__)
+  __int128_t product = (__int128_t)a * (__int128_t)b;
+  *upper = (int64_t)(product >> 64);
+  return (int64_t)(product & 0xFFFFFFFFFFFFFFFFULL);
+#elif HWY_COMPILER_MSVC && HWY_ARCH_X86_64
+  return _mul128(a, b, upper);
+#else
+  uint64_t unsigned_upper;
+  const int64_t lower = static_cast<int64_t>(Mul128(
+      static_cast<uint64_t>(a), static_cast<uint64_t>(b), &unsigned_upper));
+  *upper = static_cast<int64_t>(
+      unsigned_upper -
+      (static_cast<uint64_t>(ScalarShr(a, 63)) & static_cast<uint64_t>(b)) -
+      (static_cast<uint64_t>(ScalarShr(b, 63)) & static_cast<uint64_t>(a)));
+  return lower;
+#endif
+}
+
+// Precomputation for fast n / divisor and n % divisor, where n is a variable
+// and divisor is unchanging but unknown at compile-time.
+class Divisor {
+ public:
+  explicit Divisor(uint32_t divisor) : divisor_(divisor) {
+    if (divisor <= 1) return;
+
+    const uint32_t len =
+        static_cast<uint32_t>(31 - Num0BitsAboveMS1Bit_Nonzero32(divisor - 1));
+    const uint64_t u_hi = (2ULL << len) - divisor;
+    const uint32_t q = Truncate((u_hi << 32) / divisor);
+
+    mul_ = q + 1;
+    shift1_ = 1;
+    shift2_ = len;
+  }
+
+  uint32_t GetDivisor() const { return divisor_; }
+
+  // Returns n / divisor_.
+  uint32_t Divide(uint32_t n) const {
+    const uint64_t mul = mul_;
+    const uint32_t t = Truncate((mul * n) >> 32);
+    return (t + ((n - t) >> shift1_)) >> shift2_;
+  }
+
+  // Returns n % divisor_.
+  uint32_t Remainder(uint32_t n) const { return n - (Divide(n) * divisor_); }
+
+ private:
+  static uint32_t Truncate(uint64_t x) {
+    return static_cast<uint32_t>(x & 0xFFFFFFFFu);
+  }
+
+  uint32_t divisor_;
+  uint32_t mul_ = 1;
+  uint32_t shift1_ = 0;
+  uint32_t shift2_ = 0;
+};
 
 namespace detail {
 

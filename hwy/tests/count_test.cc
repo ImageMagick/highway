@@ -77,6 +77,7 @@ struct TestLeadingZeroCount {
     size_t N = Lanes(d);
     auto data = AllocateAligned<T>(N);
     auto lzcnt = AllocateAligned<T>(N);
+    HWY_ASSERT(data && lzcnt);
 
     constexpr T kNumOfBitsInT = static_cast<T>(sizeof(T) * 8);
     for (size_t j = 0; j < N; j++) {
@@ -155,6 +156,7 @@ struct TestTrailingZeroCount {
     size_t N = Lanes(d);
     auto data = AllocateAligned<T>(N);
     auto tzcnt = AllocateAligned<T>(N);
+    HWY_ASSERT(data && tzcnt);
 
     constexpr T kNumOfBitsInT = static_cast<T>(sizeof(T) * 8);
     for (size_t j = 0; j < N; j++) {
@@ -228,6 +230,7 @@ class TestHighestSetBitIndex {
     size_t N = Lanes(d);
     auto data = AllocateAligned<T>(N);
     auto hsb_index = AllocateAligned<T>(N);
+    HWY_ASSERT(data && hsb_index);
 
     constexpr T kNumOfBitsInT = static_cast<T>(sizeof(T) * 8);
     constexpr T kMsbIdx = static_cast<T>(kNumOfBitsInT - 1);
@@ -300,6 +303,7 @@ HWY_EXPORT_AND_TEST_P(HwyCountTest, TestAllPopulationCount);
 HWY_EXPORT_AND_TEST_P(HwyCountTest, TestAllLeadingZeroCount);
 HWY_EXPORT_AND_TEST_P(HwyCountTest, TestAllTrailingZeroCount);
 HWY_EXPORT_AND_TEST_P(HwyCountTest, TestAllHighestSetBitIndex);
+HWY_AFTER_TEST();
 }  // namespace hwy
 
 #endif

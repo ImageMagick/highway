@@ -17,6 +17,8 @@
 
 #include <limits>
 
+#include "hwy/nanobenchmark.h"
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "base_test.cc"
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
@@ -26,6 +28,13 @@
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
+namespace {
+
+HWY_NOINLINE void TestUnreachable() {
+  if (!hwy::Unpredictable1()) {
+    HWY_UNREACHABLE;
+  }
+}
 
 HWY_NOINLINE void TestAllLimits() {
   HWY_ASSERT_EQ(uint8_t{0}, LimitsMin<uint8_t>());
@@ -100,6 +109,22 @@ struct TestLowestHighest {
     if (!IsSpecialFloat<T>()) {
       HWY_ASSERT_EQ(std::numeric_limits<T>::lowest(), LowestValue<T>());
       HWY_ASSERT_EQ(std::numeric_limits<T>::max(), HighestValue<T>());
+
+      if (IsFloat<T>()) {
+        HWY_ASSERT(ScalarSignBit(NegativeInfOrLowestValue<T>()));
+        HWY_ASSERT(!ScalarIsFinite(NegativeInfOrLowestValue<T>()));
+        HWY_ASSERT(!ScalarSignBit(PositiveInfOrHighestValue<T>()));
+        HWY_ASSERT(!ScalarIsFinite(PositiveInfOrHighestValue<T>()));
+        HWY_ASSERT(NegativeInfOrLowestValue<T>() <
+                   std::numeric_limits<T>::lowest());
+        HWY_ASSERT(PositiveInfOrHighestValue<T>() >
+                   std::numeric_limits<T>::max());
+      } else {
+        HWY_ASSERT_EQ(std::numeric_limits<T>::lowest(),
+                      NegativeInfOrLowestValue<T>());
+        HWY_ASSERT_EQ(std::numeric_limits<T>::max(),
+                      PositiveInfOrHighestValue<T>());
+      }
     }
   }
 };
@@ -110,6 +135,7 @@ struct TestIsUnsigned {
   HWY_NOINLINE void operator()(T /*unused*/) const {
     static_assert(!IsFloat<T>(), "Expected !IsFloat");
     static_assert(!IsSigned<T>(), "Expected !IsSigned");
+    static_assert(IsUnsigned<T>(), "Expected IsUnsigned");
     static_assert(IsInteger<T>(), "Expected IsInteger");
   }
 };
@@ -119,6 +145,7 @@ struct TestIsSigned {
   HWY_NOINLINE void operator()(T /*unused*/) const {
     static_assert(!IsFloat<T>(), "Expected !IsFloat");
     static_assert(IsSigned<T>(), "Expected IsSigned");
+    static_assert(!IsUnsigned<T>(), "Expected !IsUnsigned");
     static_assert(IsInteger<T>(), "Expected IsInteger");
   }
 };
@@ -127,8 +154,9 @@ struct TestIsFloat {
   template <class T>
   HWY_NOINLINE void operator()(T /*unused*/) const {
     static_assert(IsFloat<T>(), "Expected IsFloat");
-    static_assert(!IsInteger<T>(), "Expected !IsInteger");
     static_assert(IsSigned<T>(), "Floats are also considered signed");
+    static_assert(!IsUnsigned<T>(), "Expected !IsUnsigned");
+    static_assert(!IsInteger<T>(), "Expected !IsInteger");
   }
 };
 
@@ -261,6 +289,44 @@ HWY_NOINLINE void TestAllDivisor() {
   for (uint32_t d = 0xFFFFFF00u; d != 0; ++d) {
     const Divisor divisor(d);
     for (uint32_t n = 0xFFFFFF00u; n != 0; ++n) {
+      HWY_ASSERT(divisor.Divide(n) == n / d);
+      HWY_ASSERT(divisor.Remainder(n) == n % d);
+    }
+  }
+}
+
+HWY_NOINLINE void TestAllDivisor64() {
+  // Small d, small n
+  for (uint64_t d = 1; d < 256; ++d) {
+    const Divisor64 divisor(d);
+    for (uint64_t n = 0; n < 256; ++n) {
+      HWY_ASSERT(divisor.Divide(n) == n / d);
+      HWY_ASSERT(divisor.Remainder(n) == n % d);
+    }
+  }
+
+  // Large d, small n
+  for (uint64_t d = 0xFFFFFFFFFFFFFF00ULL; d != 0; ++d) {
+    const Divisor64 divisor(d);
+    for (uint64_t n = 0; n < 256; ++n) {
+      HWY_ASSERT(divisor.Divide(n) == n / d);
+      HWY_ASSERT(divisor.Remainder(n) == n % d);
+    }
+  }
+
+  // Small d, large n
+  for (uint64_t d = 1; d < 256; ++d) {
+    const Divisor64 divisor(d);
+    for (uint64_t n = 0xFFFFFFFFFFFFFF00ULL; n != 0; ++n) {
+      HWY_ASSERT(divisor.Divide(n) == n / d);
+      HWY_ASSERT(divisor.Remainder(n) == n % d);
+    }
+  }
+
+  // Large d, large n
+  for (uint64_t d = 0xFFFFFFFFFFFFFF00ULL; d != 0; ++d) {
+    const Divisor64 divisor(d);
+    for (uint64_t n = 0xFFFFFFFFFFFFFF00ULL; n != 0; ++n) {
       HWY_ASSERT(divisor.Divide(n) == n / d);
       HWY_ASSERT(divisor.Remainder(n) == n % d);
     }
@@ -663,6 +729,16 @@ struct TestSpecialFloat {
     AssertSpecialFloatOpResultInRange(7.0f, 7.03125f, incr_assign_result_2,
                                       __FILE__, __LINE__);
 
+    float incr_assign_result3 = -6.747985f;
+    incr_assign_result3 += static_cast<T>(4.15625f);
+    AssertSpecialFloatOpResultInRange(-2.59375f, -2.578125f,
+                                      incr_assign_result3, __FILE__, __LINE__);
+
+    float incr_assign_result4 = 6.71875;
+    incr_assign_result4 += static_cast<T>(2.359375);
+    AssertSpecialFloatOpResultInRange(9.0625, 9.125, incr_assign_result4,
+                                      __FILE__, __LINE__);
+
     T decr_assign_result_1 = static_cast<T>(4.4059753E-4f);
     EnsureNotNativeSpecialFloat(decr_assign_result_1 -=
                                 static_cast<T>(6880.0f));
@@ -673,6 +749,16 @@ struct TestSpecialFloat {
     EnsureNotNativeSpecialFloat(decr_assign_result_2 -= static_cast<int8_t>(5));
     AssertSpecialFloatOpResultInRange(80.5f, 80.5f, decr_assign_result_2,
                                       __FILE__, __LINE__);
+
+    float decr_assign_result3 = 9.875f;
+    decr_assign_result3 -= static_cast<T>(1.5234375f);
+    AssertSpecialFloatOpResultInRange(8.3125f, 8.375f, decr_assign_result3,
+                                      __FILE__, __LINE__);
+
+    double decr_assign_result4 = 0.337890625;
+    decr_assign_result4 -= static_cast<T>(2.328125);
+    AssertSpecialFloatOpResultInRange(-1.9921875, -1.984375,
+                                      decr_assign_result4, __FILE__, __LINE__);
 
     T mul_assign_result_1 = static_cast<T>(15680.0f);
     EnsureNotNativeSpecialFloat(mul_assign_result_1 *=
@@ -685,6 +771,16 @@ struct TestSpecialFloat {
     AssertSpecialFloatOpResultInRange(18.25, 18.375, mul_assign_result_2,
                                       __FILE__, __LINE__);
 
+    float mul_assign_result3 = 4.125f;
+    mul_assign_result3 *= static_cast<T>(3.375f);
+    AssertSpecialFloatOpResultInRange(13.875f, 13.9375f, mul_assign_result3,
+                                      __FILE__, __LINE__);
+
+    double mul_assign_result4 = 7.9375;
+    mul_assign_result4 *= static_cast<T>(0.79296875);
+    AssertSpecialFloatOpResultInRange(6.28125, 6.3125, mul_assign_result4,
+                                      __FILE__, __LINE__);
+
     T div_assign_result_1 = static_cast<T>(11584.0f);
     EnsureNotNativeSpecialFloat(div_assign_result_1 /= static_cast<T>(9.5625f));
     AssertSpecialFloatOpResultInRange(1208.0f, 1216.0f, div_assign_result_1,
@@ -694,6 +790,16 @@ struct TestSpecialFloat {
     EnsureNotNativeSpecialFloat(div_assign_result_2 /= static_cast<int8_t>(3));
     AssertSpecialFloatOpResultInRange(0.040283203f, 0.040527344f,
                                       div_assign_result_2, __FILE__, __LINE__);
+
+    float div_assign_result_3 = 0.21679688f;
+    div_assign_result_3 /= static_cast<T>(3.421875f);
+    AssertSpecialFloatOpResultInRange(0.06298828125f, 0.0634765625f,
+                                      div_assign_result_3, __FILE__, __LINE__);
+
+    double div_assign_result_4 = 5.34375;
+    div_assign_result_4 /= static_cast<T>(0.337890625);
+    AssertSpecialFloatOpResultInRange(15.8125, 15.875, div_assign_result_4,
+                                      __FILE__, __LINE__);
 
     HWY_ASSERT_EQ(static_cast<T>(-1.0f),
                   EnsureNotNativeSpecialFloat(-static_cast<T>(1.0f)));
@@ -797,15 +903,17 @@ HWY_NOINLINE void TestAllSpecialFloat() {
   test(bfloat16_t());
 }
 
+}  // namespace
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace hwy
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-
 namespace hwy {
+namespace {
 HWY_BEFORE_TEST(BaseTest);
+HWY_EXPORT_AND_TEST_P(BaseTest, TestUnreachable);
 HWY_EXPORT_AND_TEST_P(BaseTest, TestAllLimits);
 HWY_EXPORT_AND_TEST_P(BaseTest, TestAllLowestHighest);
 HWY_EXPORT_AND_TEST_P(BaseTest, TestAllType);
@@ -813,11 +921,13 @@ HWY_EXPORT_AND_TEST_P(BaseTest, TestAllIsSame);
 HWY_EXPORT_AND_TEST_P(BaseTest, TestAllBitScan);
 HWY_EXPORT_AND_TEST_P(BaseTest, TestAllPopCount);
 HWY_EXPORT_AND_TEST_P(BaseTest, TestAllDivisor);
+HWY_EXPORT_AND_TEST_P(BaseTest, TestAllDivisor64);
 HWY_EXPORT_AND_TEST_P(BaseTest, TestAllScalarShr);
 HWY_EXPORT_AND_TEST_P(BaseTest, TestAllMul128);
 HWY_EXPORT_AND_TEST_P(BaseTest, TestAllEndian);
 HWY_EXPORT_AND_TEST_P(BaseTest, TestAllSpecialFloat);
 HWY_AFTER_TEST();
+}  // namespace
 }  // namespace hwy
-
-#endif
+HWY_TEST_MAIN();
+#endif  // HWY_ONCE

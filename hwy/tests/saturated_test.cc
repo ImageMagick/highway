@@ -16,6 +16,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "hwy/nanobenchmark.h"  // hwy::Unpredictable1
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "tests/saturated_test.cc"
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
@@ -25,6 +27,7 @@
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
+namespace {
 
 struct TestUnsignedSaturatedAddSub {
   template <typename T, class D>
@@ -52,7 +55,7 @@ struct TestSignedSaturatedAddSub {
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
     const Vec<D> v0 = Zero(d);
     const Vec<D> vpm = Set(d, LimitsMax<T>());
-    const Vec<D> vi = PositiveIota(d);
+    const Vec<D> vi = PositiveIota(d, 1);
     const Vec<D> vn = Sub(v0, vi);
     const Vec<D> vnm = Set(d, LimitsMin<T>());
     HWY_ASSERT_MASK_EQ(d, MaskTrue(d), Gt(vi, v0));
@@ -102,8 +105,8 @@ struct TestSaturatedAbs {
   template <typename T, class D>
   HWY_NOINLINE void operator()(T /*unused*/, D d) {
     const Vec<D> v0 = Zero(d);
-    const Vec<D> vp1 = Set(d, static_cast<T>(1));
-    const Vec<D> vn1 = Set(d, static_cast<T>(-1));
+    const Vec<D> vp1 = Set(d, static_cast<T>(hwy::Unpredictable1()));
+    const Vec<D> vn1 = Neg(vp1);
     const Vec<D> vpm = Set(d, LimitsMax<T>());
     const Vec<D> vnm = Set(d, LimitsMin<T>());
 
@@ -147,19 +150,21 @@ HWY_NOINLINE void TestAllSaturatedNeg() {
   ForSignedTypes(ForPartialVectors<TestSaturatedNeg>());
 }
 
+}  // namespace
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace hwy
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-
 namespace hwy {
+namespace {
 HWY_BEFORE_TEST(HwySaturatedTest);
 HWY_EXPORT_AND_TEST_P(HwySaturatedTest, TestAllSaturatedAddSub);
 HWY_EXPORT_AND_TEST_P(HwySaturatedTest, TestAllSaturatedAbs);
 HWY_EXPORT_AND_TEST_P(HwySaturatedTest, TestAllSaturatedNeg);
 HWY_AFTER_TEST();
+}  // namespace
 }  // namespace hwy
-
-#endif
+HWY_TEST_MAIN();
+#endif  // HWY_ONCE

@@ -28,6 +28,7 @@
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
+namespace {
 
 template <size_t kLimit, typename T>
 HWY_NOINLINE void TestCappedLimit(T /* tag */) {
@@ -395,6 +396,11 @@ struct TestNaN {
     HWY_ASSERT_NAN(d, Min(nan, nan));
     HWY_ASSERT_NAN(d, Max(nan, nan));
 
+    HWY_ASSERT_VEC_EQ(d, v1, MinNumber(nan, v1));
+    HWY_ASSERT_VEC_EQ(d, v1, MaxNumber(nan, v1));
+    HWY_ASSERT_VEC_EQ(d, v1, MinNumber(v1, nan));
+    HWY_ASSERT_VEC_EQ(d, v1, MaxNumber(v1, nan));
+
     // AbsDiff
     HWY_ASSERT_NAN(d, AbsDiff(nan, v1));
     HWY_ASSERT_NAN(d, AbsDiff(v1, nan));
@@ -577,14 +583,15 @@ HWY_NOINLINE void TestAllBlockDFromD() {
   ForAllTypes(ForPartialVectors<TestBlockDFromD>());
 }
 
+}  // namespace
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace hwy
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-
 namespace hwy {
+namespace {
 HWY_BEFORE_TEST(HighwayTest);
 HWY_EXPORT_AND_TEST_P(HighwayTest, TestAllCapped);
 HWY_EXPORT_AND_TEST_P(HighwayTest, TestAllMaxLanes);
@@ -602,6 +609,7 @@ HWY_EXPORT_AND_TEST_P(HighwayTest, TestAllDFromV);
 HWY_EXPORT_AND_TEST_P(HighwayTest, TestAllBlocks);
 HWY_EXPORT_AND_TEST_P(HighwayTest, TestAllBlockDFromD);
 HWY_AFTER_TEST();
+}  // namespace
 }  // namespace hwy
-
-#endif
+HWY_TEST_MAIN();
+#endif  // HWY_ONCE

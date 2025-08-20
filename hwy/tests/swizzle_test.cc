@@ -26,6 +26,7 @@
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
+namespace {
 
 struct TestGetLane {
   template <class T, class D>
@@ -258,7 +259,7 @@ struct TestInsertLane {
 #endif
 
 // TODO(janwas): file compiler bug report
-#if HWY_COMPILER_CLANG && (HWY_COMPILER_CLANG < 1900) && HWY_ARCH_ARM
+#if HWY_COMPILER_CLANG && (HWY_COMPILER_CLANG < 2000) && HWY_ARCH_ARM
     if (IsSpecialFloat<T>()) return;
 #endif
 
@@ -397,14 +398,15 @@ HWY_NOINLINE void TestAllBroadcastLane() {
   ForAllTypes(ForPartialFixedOrFullScalableVectors<TestBroadcastLane>());
 }
 
+}  // namespace
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace hwy
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-
 namespace hwy {
+namespace {
 HWY_BEFORE_TEST(HwySwizzleTest);
 HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllGetLane);
 HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllExtractLane);
@@ -414,6 +416,7 @@ HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllDupOdd);
 HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllOddEven);
 HWY_EXPORT_AND_TEST_P(HwySwizzleTest, TestAllBroadcastLane);
 HWY_AFTER_TEST();
+}  // namespace
 }  // namespace hwy
-
-#endif
+HWY_TEST_MAIN();
+#endif  // HWY_ONCE

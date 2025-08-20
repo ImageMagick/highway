@@ -24,6 +24,7 @@
 HWY_BEFORE_NAMESPACE();
 namespace hwy {
 namespace HWY_NAMESPACE {
+namespace {
 
 struct TestUnsignedMinMax {
   template <class T, class D>
@@ -136,18 +137,42 @@ HWY_NOINLINE void TestAllSignedMinMax() {
   ForFloatTypes(ForPartialVectors<TestSignedMinMax>());
 }
 
+struct TestMaskedMax {
+  template <typename T, class D>
+  HWY_NOINLINE void operator()(T /*unused*/, D d) {
+    const MFromD<D> all_true = MaskTrue(d);
+    const auto v1 = PositiveIota(d, 1);
+    const auto v2 = PositiveIota(d, 2);
+
+    // Might not equal v2 due to 8-bit wraparound on RVV.
+    HWY_ASSERT_VEC_EQ(d, Max(v1, v2), MaskedMax(all_true, v1, v2));
+
+    const MFromD<D> first_five = FirstN(d, 5);
+    const Vec<D> expected = IfThenElseZero(first_five, v2);
+    const Vec<D> actual = MaskedMax(first_five, v1, v2);
+    HWY_ASSERT_VEC_EQ(d, expected, actual);
+  }
+};
+
+HWY_NOINLINE void TestAllMaskedMax() {
+  ForAllTypes(ForPartialVectors<TestMaskedMax>());
+}
+
+}  // namespace
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace hwy
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-
 namespace hwy {
+namespace {
 HWY_BEFORE_TEST(HwyMaskedMinMaxTest);
 HWY_EXPORT_AND_TEST_P(HwyMaskedMinMaxTest, TestAllUnsignedMinMax);
 HWY_EXPORT_AND_TEST_P(HwyMaskedMinMaxTest, TestAllSignedMinMax);
+HWY_EXPORT_AND_TEST_P(HwyMaskedMinMaxTest, TestAllMaskedMax);
 HWY_AFTER_TEST();
+}  // namespace
 }  // namespace hwy
-
-#endif
+HWY_TEST_MAIN();
+#endif  // HWY_ONCE

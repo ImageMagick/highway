@@ -1,5 +1,23 @@
 [STATIC_LIBRARY]
 
+[VERSION]
+1.3.0
+
+[RELEASE_DATE]
+2025-08-14
+
+[PRODUCT_NAME]
+libhwy
+
+[COMPANY_NAME]
+Google LLC
+
+[URL]
+https://github.com/google/highway
+
+[COPYRIGHT]
+Copyright 2019 Google LLC
+
 [LICENSE_FILE]
 LICENSE
 
